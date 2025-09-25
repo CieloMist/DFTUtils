@@ -1,0 +1,12 @@
+! Set Energy Window
+COHPstartEnergy  -20
+COHPendEnergy  15
+
+! Set Basis Functions
+userecommendedbasisfunctions
+basisfunctions Ag 5s 5d 4p
+basisfunctions I 5p
+
+! Set some other stuff
+    ! cohpBetween atom 1 atom 2
+cohpGenerator from 1.00 to 3.50
