@@ -9,10 +9,11 @@ import subprocess
 import numpy as np
 # ASE Relaxation Stuff
 from ase.calculators.vasp import Vasp
-from ase.optimize import BFGS, BFGSLineSearch, GPMin
+from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin
     # Filters/Masks
 from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
+from ase.stressbox import stressbox
     # File io
 from ase.io import read, write
 from asekpd import safe_kgrid_from_cell_volume
@@ -20,6 +21,9 @@ from asekpd import safe_kgrid_from_cell_volume
 from pymatgen.io.vasp import Kpoints
 # MACE
 from mace.calculators import mace_mp
+# META
+from fairchem.core import pretrained_mlip, FAIRChemCalculator
+
 # ----------------------------------- #
 # VASP Path Definitions
 os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
@@ -44,14 +48,23 @@ optimizer = filter_settings.pop('optimizer')
 fmax = filter_settings.pop('fmax')
 restart = filter_settings.pop('restart')
 
+# cover stressbox case, passed as a sub dictionary to filter_settings
+try:
+    stressbox_settings = filter_settings.pop('stressbox_settings')
+    stressbox_settings['express'] = np.array(stressbox_settings['express'])
+    stressbox_settings['fixstrain'] = np.array(stressbox_settings['fixstrain'])
+except:
+    pass
+
 # --------------------- #
 # Read MACE settings
-with open('mace_settings.json') as json_file:
-    mace_settings = json.load(json_file)
+with open('MLIP_settings.json') as json_file:
+    MLIP_settings = json.load(json_file)
     json_file.close()
 
-fmax_mace = mace_settings.pop('fmax')
-mace_only = mace_settings.pop('mace_only')
+MLIP = MLIP_settings.pop('MLIP')
+fmax_MLIP = MLIP_settings.pop('fmax')
+MLIP_only = MLIP_settings.pop('MLIP_only')
 
 # ----------------------------------------------------------------------- #
 # Calculation Details
@@ -67,6 +80,9 @@ if filter_type == 'Frechet':
     struct_opt = FrechetCellFilter(struct, **filter_settings)
 elif filter_type == 'strain':
     struct_opt = StrainFilter(struct, **filter_settings)
+elif filter_type == 'stressbox':
+    ref_struct = struct.copy()
+    struct_opt = stressbox(struct, ref_atom = ref_struct, **stressbox_settings)
 else:
     struct_opt = struct.copy() # set no filter if no filter is provided
 
@@ -78,21 +94,32 @@ if optimizer == 'BFGSLineSearch':
 elif optimizer == 'GPMin':
     restart_file = 'gaussian_process.json'
     relaxer = GPMin(struct_opt, trajectory = 'relax.traj', restart=restart_file)
+elif optimizer == 'MDMin':
+    restart_file = 'MDMin.json'
+    relaxer = MDMin(struct_opt, trajectory = 'relax.traj', restart = restart_file)
 else:
     restart_file='BFGS_hessian.json'
     relaxer = BFGS(struct_opt, trajectory = 'relax.traj', restart=restart_file)
     
 # ------------------------------------------------------------- #
 # MACE PRE-RELAXATION
-calc = mace_mp(**mace_settings)
+if MLIP == 'uma':
+    try: # pop task name
+        task_name = MLIP_settings.pop('task_name')
+    except:
+        task_name = 'omat'
+    predictor = pretrained_mlip.get_predict_unit(**MLIP_settings)
+    calc = FAIRChemCalculator(predictor, task_name=task_name)
+else: # default to MACE
+    calc = mace_mp(**MLIP_settings)
 struct.calc = calc
 
-relaxer.run(fmax = fmax_mace)
+relaxer.run(fmax = fmax_MLIP)
 
     # clear the hessian for VASP
 os.remove(restart_file)
 
-if mace_only == False:
+if MLIP_only == False:
     # ------------------------------------------------------------- #
     # VASP RELAXATION
         # KPOINTS
@@ -102,14 +129,16 @@ if mace_only == False:
     struct.calc = calc
 
     relaxer.run(fmax = fmax)
+
+    # ----------------------------------- #
+    # High-Res DOS calculation:
+    struct_dos = struct.copy()
+    vasp_settings['ismear'] = -5
+    vasp_settings['lelf'] = True
+    struct_dos.calc = Vasp(**vasp_settings, kpts = kpts_list)
+    struct_dos.get_potential_energy()
+
 # ----------------------------------- #
 # Write out relevant parameters
 write('POSCAR_relaxed', struct, format = 'vasp')
 struct.calc.write_json('calc_state.json')
-
-# ----------------------------------- #
-# High-Res DOS calculation:
-struct_dos = struct.copy()
-vasp_settings['ismear'] = -5
-struct_dos.calc = Vasp(**vasp_settings, kpts = kpts_list)
-struct_dos.get_potential_energy()

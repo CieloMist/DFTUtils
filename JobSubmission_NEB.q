@@ -13,8 +13,8 @@
 
 #SBATCH --constraint="[quest10|quest11|quest12|quest13]"
 
-#SBATCH -p normal        # queue (partition) -- normal, development, ect.
-#SBATCH -t 08:00:00      # time
+#SBATCH -p short        # queue (partition) -- normal, development, ect.
+#SBATCH -t 04:00:00      # time
 
 #------------------------------------------------------------------------------
 module purge all

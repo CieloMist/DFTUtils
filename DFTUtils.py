@@ -137,13 +137,14 @@ def calculate_moment(x, y, n):
     num = simpson(y = y * np.power(x,powers), x = x)
     denom = simpson(y = y, x = x)
 
-def get_bader_charges(clustering_tol=1e-4):
-    """Get the bader charges from a finished DFT calculation. 
-    Returns a dictionary of elements and charges. Elements with multiple charge states (within tolerance) are indexed starting from 0.
-    **round_kwargs: keywords passed to numpy's rounding function; how many decimals do you want charge rounded to?
-    """
-    import os
+    return num, num/denom
 
+def get_bader_charges(clustering_tol=1e-4, return_volumes = True):
+    """Get the bader charges from a finished DFT calculation. 
+    Returns a dictionary of elements and charges. Elements with multiple charge states (within tolerance) are indexed starting from 1.
+    """
+
+    import os
     from pymatgen.command_line.bader_caller import bader_analysis_from_path
     from pymatgen.core.structure import Structure
     from pymatgen.core.composition import Species
@@ -165,18 +166,21 @@ def get_bader_charges(clustering_tol=1e-4):
     # PROCESS BADER RESULTS INTO WHATEVER FORM YOU LIKE
     # Get bader charges and element for each atomic index
     partial_charges = np.zeros(len(struct))
+    atomic_volumes = np.zeros(len(struct))
     element_symbols = np.zeros(len(struct), dtype = 'object')
     for atom_ind, atom in enumerate(struct):
         partial_charges[atom_ind] = -1 * bader['charge_transfer'][atom_ind] # -1 converts charge transfer into partial charge
+        atomic_volumes[atom_ind] = bader['atomic_volume'][atom_ind]
         element_symbols[atom_ind] = atom.species_string
 
     # Aggregate unique charges, place results in dictionary for return
     formated_charges = np.vstack((partial_charges, np.zeros(len(partial_charges)))).T
     clusters = hcluster.fclusterdata(formated_charges, clustering_tol, criterion='distance')
-    
+
     clustered_charges, clustered_indices = np.unique(clusters, return_index=True)
     unique_charges = partial_charges[clustered_indices]
     corresponding_elements = element_symbols[clustered_indices].astype('str')
+    corresponding_volumes = atomic_volumes[clustered_indices]
 
     # ---------------------------------------------------------- #
     # Convert to dictionary - handle case where you have two of the same element with different charge
@@ -185,10 +189,14 @@ def get_bader_charges(clustering_tol=1e-4):
         if match_indices.size > 1:
             corresponding_elements[match_indices] = np.char.add(corresponding_elements[match_indices],(match_indices - match_indices[0] + 1).astype('str'))
 
-    return dict(zip(corresponding_elements, unique_charges))
+    to_return = {'charges': dict(zip(corresponding_elements, unique_charges))}
+    if return_volumes == True:
+        to_return = to_return | {'volumes': dict(zip(corresponding_elements, corresponding_volumes))}
+
+    return to_return
 
 
-def get_strain(final, initial):
+def get_strain(final, initial, standard_form=True):
     """Calculate cell strain between two ASE atoms objects. immediately kills user if they input two cells with different numbers of atoms.
 
     Args:
@@ -197,8 +205,12 @@ def get_strain(final, initial):
     """
 
     # Put each cell in standard form
-    rcell_f, q_f = final.cell.standard_form()
-    rcell_i, q_i = initial.cell.standard_form()
+    if standard_form == True:
+        rcell_f, q_f = final.cell.standard_form()
+        rcell_i, q_i = initial.cell.standard_form()
+    else:
+        rcell_f = final.cell
+        rcell_i = initial.cell
 
     # Get cell parameters from each std form cell
     f_cell = rcell_f.cellpar()
@@ -327,3 +339,216 @@ def aggregate_unique_structures(structures, **symmetry_kwargs):
         structures_np = np.delete(structures_np, [equivalent_structures == True][0])
 
     return unique_structures
+
+def render_povray(filename, struct, atom_render_settings, povray_settings, isosurfaces = None, bonds = True):
+    """
+    Renders an ASE atoms object using POVRAY. Basically just so I don't have to repeat all this code every time.
+    Args:
+    filename (str): Path (relative to current working directory) to place the rendered image (WITHOUT .PNG)
+    struct (ASE atoms): structure to render
+    atom_render_settings (dict): keyword args for atom render, e.g. 'radii', 'colors', 'show_unit_cell', etc.
+    povray_settings (dict): render settings for povray, e.g. 'transparent', 'textures', etc.
+    isosurfaces (list of POVRAYIsosurfaces): isosurface data
+    bonds (bool): whether to render bonds or not
+
+    """
+
+    import os
+    from ase.io.pov import POVRAY, get_bondpairs, set_high_bondorder_pairs
+    from ase.io import write
+
+    if bonds == True:
+        bondpairs = get_bondpairs(struct, radius=1.0)
+        high_bondorder_pairs = {}
+        def setbond(target, order):
+            high_bondorder_pairs[(0, target)] = ((0, 0, 0), order, (0.1, -0.2, 0))
+        bondpairs = set_high_bondorder_pairs(bondpairs, high_bondorder_pairs)
+
+        povray_settings['bondatoms'] = bondpairs
+
+    pov_object = write(filename + '.pov', struct, isosurface_data = isosurfaces, **atom_render_settings, povray_settings = povray_settings)
+
+    pov_object.render(povray_executable='/gpfs/projects/p32212/Software_LifeEasy/povray/povray/unix/povray')
+
+
+def render_chg_slice(struct, slice_axis, slice_depth, ax = None, chg_file = 'CHGCAR', darken_sliced_atoms = True, contourf = True, contour_settings = {}, contourf_settings = {}, plot_atoms_settings = {}):
+    """
+    Renders the charge density of a particular slice of a structure.
+
+    Args
+    ----------------------
+    struct (ASE Atoms): Structure to render
+    slice_axis (str: 'x, y or z'): Plane to look at
+    slice_depth (float): Scaled position of the slice to look at
+    contour_settings (dict): passed directly to plt.contour
+    plot_atoms_settings (dict): passed directly to ase.visualize.plot_atoms
+    """
+    from ase.calculators.vasp import VaspChargeDensity
+    from ase.io.utils import PlottingVariables
+    import matplotlib.pyplot as plt
+    from ase.visualize.plot import plot_atoms
+    from ase.data import covalent_radii
+    from ase.data.colors import jmol_colors
+    # ----------------------------------------- #
+    def get_offset(struct, rotation):
+        pvars = PlottingVariables(struct, rotation = rotation, scale=1.0)
+        offset = pvars.to_atom_positions(pvars.offset) / 2
+        
+        bbox = pvars.get_bbox()
+        return offset, bbox
+
+    def get_plane(point, normal):
+        A, B, C = normal
+        D = np.dot(point, normal)
+        return [A, B, C, D]
+        
+    # ------------------------------------------ #
+    # set struct to standard form:
+    struct.set_cell(struct.cell.standard_form()[0], scale_atoms = True)
+    cell_lengths = struct.cell.lengths()
+
+    # ------------------------------------------ #
+    # Read in and normalize charge
+    vchg = VaspChargeDensity(chg_file)
+    chg = vchg.chg[0] / np.max(vchg.chg[0])
+
+    # ------------------------------------------ #
+    # Define coordinate mesh for charge
+    x_coords = np.linspace(0, 1, len(chg[:,0,0]))
+    y_coords = np.linspace(0, 1, len(chg[0,:,0]))
+    z_coords = np.linspace(0, 1, len(chg[0,0,:]))
+
+    full_data = np.stack(np.meshgrid(x_coords,y_coords,z_coords, indexing = 'ij'), axis = 3)
+
+    # ------------------------------------------ #
+    # Choose what slice you're looking at:
+    if slice_axis == 'yz':
+        rotation = '-90x,0y,0z'
+
+        offset, bbox = get_offset(struct, rotation)
+        scaled_data = np.abs((full_data[:,:,:,:] @ struct.cell[:]) - offset)
+        
+        mesh = full_data[:,:,0,:2]
+        X = scaled_data[:,0,:,0]
+        Y = scaled_data[:,0,:,2]
+        
+        slice_index = int(slice_depth * chg.shape[1])
+        Z = chg[:,slice_index,:]
+
+        # -------------- #
+        # Get plane equation
+        A,B,C,D = get_plane([0,slice_depth * cell_lengths[1],0], [0,1,0])
+
+    if slice_axis == 'xz':
+        rotation = '0x,-90y,0z'
+
+        offset, bbox = get_offset(struct, rotation)
+        scaled_data = np.abs((full_data[:,:,:,:] @ struct.cell[:]) - offset)
+
+        mesh = full_data[:,:,0,:2]
+        X = scaled_data[:,:,0,0]
+        Y = scaled_data[:,:,0,1]
+        
+        slice_index = int(slice_depth * chg.shape[2])
+        Z = chg[:,:,slice_index]
+
+        # -------------- #
+        # Get plane equation
+        A,B,C,D = get_plane([0,0,slice_depth * cell_lengths[2]], [0,0,1])
+    
+    if slice_axis == 'xy':
+        rotation = '0x,0y,-90z'
+
+        offset, bbox = get_offset(struct, rotation)
+        scaled_data = np.abs((full_data[:,:,:,:] @ struct.cell[:]) - offset)
+
+        mesh = full_data[:,:,0,:2]
+        X = scaled_data[:,:,0,0]
+        Y = scaled_data[:,:,0,1]
+
+        slice_index = int(slice_depth * chg.shape[2])
+        Z = chg[:,:,slice_index]
+
+        # -------------- #
+        # Get plane equation
+        A,B,C,D = get_plane([0,0,slice_depth * cell_lengths[2]], [0,0,1])
+
+    # ------------------------------------------ #
+    # Get intersection of atoms with plane:
+    sphere_centers = struct.get_positions()
+    ones = -1 * np.ones((1,sphere_centers.shape[0]))
+
+    sphere_centers_concat = np.concatenate((sphere_centers, ones.T), axis = 1)
+    radii = np.array([covalent_radii[atom.number] for atom in struct])
+
+    plane_distances = np.sum([A,B,C,D] * sphere_centers_concat, axis = 1) / np.linalg.norm([A,B,C])
+
+    back_intersections = np.logical_and(plane_distances < radii, plane_distances <= 0)
+    front_intersections = np.logical_and(plane_distances > -1 * radii, plane_distances >= 0)
+
+    back_non_intersections = np.logical_and(plane_distances < -1 * radii, plane_distances <= 0)
+    front_non_intersections = np.logical_and(plane_distances > radii, plane_distances >= 0)
+
+    # --------------------------------------------------------- #
+    # Tag and color atoms based on intersection type
+    # Turn atoms entirely in front of plane clear 
+    front_non_intersection_colors = np.full(len(radii), 1)
+    back_non_intersection_colors = np.full(len(radii), 2)
+
+    colors = np.array([jmol_colors[atom.number] for atom in struct])
+    colors_w_alpha = np.concatenate((colors, np.ones((1,colors.shape[0])).T), axis = 1)
+    
+    colors_w_alpha[:,3][front_non_intersections] = 0
+
+    # --------------------------------------------------------- #
+    # For atoms whose radius intersects the plane, establish the radius of the cut circle
+    radii_cut = np.sqrt(radii ** 2 - plane_distances ** 2)
+    to_combine = np.logical_and(front_intersections == False, back_intersections == False)
+    radii_cut[to_combine] = radii[to_combine]
+
+    colors_cut_atoms = colors_w_alpha.copy()
+    if darken_sliced_atoms == True:
+        colors_cut_atoms[to_combine == False, :3] = colors_cut_atoms[to_combine == False, :3] * 0.7
+
+    # --------------------------------------------------------- #
+    # Modify copied (second plotted structure) to render atom intersections
+    
+    # delete atoms in front of image plane that don't intersect it
+    # then delete atoms behind image plane with no intersections
+    struct_copy = struct.copy()
+
+    to_delete_copy = np.logical_or(front_non_intersections, back_non_intersections)
+
+    del struct_copy[to_delete_copy]
+    colors_cut_atoms = np.delete(colors_cut_atoms, to_delete_copy, axis=0)
+    radii_cut = np.delete(radii_cut, to_delete_copy, axis=0)
+
+    # --------------------------------------------------------- #
+    # Modify atoms (original structure) to render those without intersections
+
+    # delete atoms in front of image plane that don't intersect it
+    # then delete atoms with back intersections
+    struct_original = struct.copy()
+    
+    to_delete_original = np.logical_or(front_non_intersections, back_intersections)
+
+    del struct_original[to_delete_original]
+    colors_w_alpha = np.delete(colors_w_alpha, to_delete_original, axis=0)
+
+    # ------------------------------------------ #
+    # Plot
+    if ax == None:
+        fig, ax = plt.subplots()
+
+    plotting_variables = {'bbox': bbox}
+
+    if np.any(to_delete_original == False):
+        plot_atoms(struct_original, ax, rotation = rotation, **plot_atoms_settings, **plotting_variables, colors = colors_w_alpha)
+    plot_atoms(struct_copy, ax, rotation = rotation, **plot_atoms_settings, **plotting_variables, colors = colors_cut_atoms, radii = radii_cut)
+    
+    if contourf == True:
+        ax.contourf(X, Y, Z, **contourf_settings)
+
+    ax.contour(X, Y, Z, **contour_settings)
+
+    return ax

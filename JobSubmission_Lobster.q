@@ -18,5 +18,4 @@ module load java/jdk1.8.0_191
 module load numpy/1.19.2
 module load openblas/0.3.21-gcc-4.8.5
 
-mpirun -n $SLURM_NTASKS vasp_std > vasp.out
-/projects/p32212/Software_LifeEasy/lobster-5.1.1/lobster-5.1.1
+/home/ysx6266/.conda/envs/phonyop/bin/python Lobster.py

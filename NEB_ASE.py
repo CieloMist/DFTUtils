@@ -61,7 +61,7 @@ else:
     images += [final]
     
     neb = NEB(images, **neb_settings)
-    neb.interpolate()
+    neb.interpolate(method='idpp')
 # ----------------------------------- #
 # Set Calculator for images
 for image in images:

@@ -9,10 +9,11 @@ import subprocess
 import numpy as np
 # ASE Relaxation Stuff
 from ase.calculators.vasp import Vasp
-from ase.optimize import BFGS, BFGSLineSearch, GPMin
+from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin
     # Filters/Masks
 from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
+from ase.stressbox import stressbox
     # File io
 from ase.io import read, write
 from asekpd import safe_kgrid_from_cell_volume
@@ -42,6 +43,14 @@ optimizer = filter_settings.pop('optimizer')
 fmax = filter_settings.pop('fmax')
 restart = filter_settings.pop('restart')
 
+# cover stressbox case, passed as a sub dictionary to filter_settings
+try:
+    stressbox_settings = filter_settings.pop('stressbox_settings')
+    stressbox_settings['express'] = np.array(stressbox_settings['express'])
+    stressbox_settings['fixstrain'] = np.array(stressbox_settings['fixstrain'])
+except:
+    pass
+
 # ----------------------------------------------------------------------- #
 # Calculation Details
     # Set Initial Structure
@@ -64,6 +73,8 @@ if filter_type == 'Frechet':
     struct_opt = FrechetCellFilter(struct, **filter_settings)
 elif filter_type == 'strain':
     struct_opt = StrainFilter(struct, **filter_settings)
+elif filter_type == 'stressbox':
+    struct_opt = stressbox(struct, ref_atom = struct.copy(), **stressbox_settings)
 else:
     struct_opt = struct.copy() # set no filter if no filter is provided
 
@@ -73,6 +84,8 @@ if optimizer == 'BFGSLineSearch':
     relaxer = BFGSLineSearch(struct_opt, trajectory = 'relax.traj', restart='BFGSLS_hessian.json')
 elif optimizer == 'GPMin':
     relaxer = GPMin(struct_opt, trajectory = 'relax.traj', restart='gaussian_process.json')
+elif optimizer == 'MDMin':
+    relaxer = MDMin(struct_opt, trajectory = 'relax.traj', restart = 'MDMin_restart.json')
 else:
     relaxer = BFGS(struct_opt, trajectory = 'relax.traj', restart='BFGS_hessian.json')
     
@@ -88,6 +101,7 @@ struct.calc.write_json('calc_state.json')
 # High-Res DOS calculation:
 struct_dos = struct.copy()
 vasp_settings['ismear'] = -5
+vasp_settings['lelf'] = True
 struct_dos.calc = Vasp(**vasp_settings, kpts = kpts_list)
 struct_dos.get_potential_energy()
 
