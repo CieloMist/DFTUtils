@@ -20,7 +20,7 @@
 "lreal": false, 
 "isym": 2, 
 "ispin": 1, 
-"setups": "recommended", 
-"xc": "pbesol", 
+"setups": "recommended",
+"xc": "pbesol",
 "ncore": 8,
 "kpar": 1}

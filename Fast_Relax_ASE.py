@@ -43,10 +43,10 @@ with open('filter_settings.json') as json_file:
     filter_settings = json.load(json_file)
     json_file.close()
 
-filter_type = filter_settings.pop('filter')
-optimizer = filter_settings.pop('optimizer')
-fmax = filter_settings.pop('fmax')
-restart = filter_settings.pop('restart')
+filter_type = filter_settings.pop('filter', 'Frechet')
+optimizer = filter_settings.pop('optimizer', 'BFGS')
+fmax = filter_settings.pop('fmax', 0.005)
+restart = filter_settings.pop('restart', False)
 
 # cover stressbox case, passed as a sub dictionary to filter_settings
 try:

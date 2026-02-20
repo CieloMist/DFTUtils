@@ -552,3 +552,284 @@ def render_chg_slice(struct, slice_axis, slice_depth, ax = None, chg_file = 'CHG
     ax.contour(X, Y, Z, **contour_settings)
 
     return ax
+
+def interchange_atoms_ase_phonopy(struct):
+    """
+    Converts ASE atoms to phonopy atoms and vice versa. Made for easier readability/interoperability between the packages.
+
+    Args:
+    ase_atoms (Atoms): ASE atoms object
+    phonopy_atoms (PhonopyAtoms): Phonopy atoms object
+    """
+
+    from ase import Atoms
+    from phonopy.structure.atoms import PhonopyAtoms
+
+    if isinstance(struct, Atoms):
+        atoms = PhonopyAtoms(symbols=struct.get_chemical_symbols(),
+                    numbers=struct.get_atomic_numbers(),
+                    masses=struct.get_masses(),
+                    scaled_positions=struct.get_scaled_positions(),
+                    positions=struct.get_positions(),
+                    cell=struct.get_cell())
+
+    elif isinstance(struct, PhonopyAtoms):
+        atoms = Atoms(symbols=struct.symbols,
+                      positions=struct.positions,
+                      masses=struct.masses,
+                      cell=struct.cell)
+
+    return atoms
+
+def interchange_atoms_ase_spglib(struct):
+    """
+    Converts between ase atoms and spglib cell.
+
+    Args
+    --------
+    struct (Ase Atoms or spglib Cell): object to convert
+    """
+    from ase import Atoms
+
+    if isinstance(struct, Atoms):
+        to_return = (struct.cell[:], struct.get_scaled_positions(), struct.get_chemical_symbols())
+    else:
+        to_return = Atoms(symbols = struct[2], scaled_positions=struct[1], cell=struct[0])
+
+    return to_return
+
+def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = None, directory_suffix = None):
+    """
+    Setup and submit phonons as a set of batch calculations via Phonopy.
+
+    --Args--
+    atoms (ASE Atoms):
+    """
+
+
+    from DFTUtils import interchange_atoms_ase_phonopy, copy_files_from_DFTUtilities, write_pickle
+    from ase.io import read, write
+    from phonopy import Phonopy
+    import subprocess
+    import shutil as sh
+    import os
+
+    # ----------------------------------------------- #
+    # Create phonons directory
+    dirlist = ['Phonons' if directory_suffix == None else 'Phonons_' + directory_suffix]
+    make_directories_from_list(dirlist, delete = True)
+    os.chdir(dirlist[0])
+
+    # ------------------------------------------------ #
+    # Setup folders, run calculation:
+    atoms = interchange_atoms_ase_phonopy(initial_struct)
+    phonons = Phonopy(atoms, **phonopy_settings)
+
+    directory_suffix = phonopy_settings.pop('directory_suffix', None)
+    displacement_distance = phonopy_settings.pop('displacement_distance', 0.01)
+
+    phonons.generate_displacements(distance = displacement_distance)
+    supercells = phonons.supercells_with_displacements
+    # phonons.save('phonopy_disp.yaml')
+    write_pickle('phonons.pickle', phonons)
+
+    # ------------------------------------------------ #
+    # Setup folders, run calculation:
+    displacement_directories = [f'disp-{ind:03}' for ind in range(len(supercells))]
+
+    make_directories_from_list(displacement_directories, delete = False)
+    for ind, phonopy_atoms in enumerate(supercells):
+        os.chdir(displacement_directories[ind])
+        # ------------------------------------ #
+        # Get Potential Energies/Run Calculation:
+        # Convert to ASE, set calc parameters
+        struct = interchange_atoms_ase_phonopy(phonopy_atoms)
+        struct.set_pbc([1,1,1])
+        write('Initial.traj', struct, format = 'traj')
+
+        # get files from dftutils:
+        copy_files_from_DFTUtilities(['ASE_SinglePoint.py', 'HPC_Submission_Scripts/JobSubmission_SinglePoint.q'])
+
+        if updated_vasp_settings == None:
+            sh.copy('../../vasp_settings.json', 'vasp_settings.json')
+        else:
+            write_vasp_settings(updated_vasp_settings)
+
+        # run calculation
+        subprocess.run(['sbatch','JobSubmission_SinglePoint.q'])
+
+        os.chdir('../')
+
+    return
+
+def process_phonons():
+    """
+    Post process the results of batch-submitted phonon calculations with ASE and Phonopy.
+    """
+
+    import glob
+    import os
+
+    from ase.io import read
+    import phonopy
+    from DFTUtils import read_pickle
+
+    # ----------------------------------- #
+    # Read displacement dataset into a Phonopy() object
+    #phonons = phonopy.load('phonopy_disp.yaml')
+    phonons = read_pickle('phonons.pickle')
+    force_sets = np.zeros((len(phonons.displacements), len(phonons.supercell), 3)) # m displacements, n atoms in structures, 3 DOF
+    
+    supercells = phonons.supercells_with_displacements
+    # ----------------------------------- #
+    # read force sets:
+    displacement_directories = [f'disp-{ind:03}' for ind in range(len(supercells))]
+
+    for ind, disp_dir in enumerate(displacement_directories):
+        os.chdir(disp_dir)
+
+        struct = read('Final.traj', format = 'traj')
+        force_sets[ind][:,:] = struct.get_forces()
+
+        os.chdir('../')
+
+    # ------------------------------------ #
+    # Tell phonopy object what the forces were and make force constants
+    phonons.forces = force_sets
+    phonons.produce_force_constants()
+
+    phonons.save() # write results to file
+
+    return phonons
+
+
+def repair_phonons(updated_vasp_settings = None):
+    """
+    Find which phonon calculations didn't finish and restart them.
+    """
+
+    from pymatgen.io.vasp.outputs import Vasprun
+    import glob
+    from DFTUtils import write_vasp_settings
+    import os
+
+    # ----------------------------------- #
+    # find which phonon calculations didn't work:
+    displacement_directories = glob.glob('disp*/')
+
+    gone_wrong = []
+    for ind, disp_dir in enumerate(displacement_directories):
+        os.chdir(disp_dir)
+
+        try:
+            vasprun = Vasprun('vasprun.xml')
+            if not vasprun.converged_electronic:
+                gone_wrong.append(disp_dir)
+        except:
+            gone_wrong.append(disp_dir)
+
+        os.chdir('../')
+
+    # ----------------------------------- #
+    # Go through wrong directories and restart calculations:
+    for directory in gone_wrong:
+        os.chdir(directory)
+
+        if updated_vasp_settings != None:
+            write_vasp_settings(updated_vasp_settings)
+
+        print(f'Restarting {directory} calculation...')
+        subprocess.run(['sbatch', 'JobSubmission_SinglePoint.q'])
+
+        os.chdir('../')
+    
+    return
+
+def repair_calcs(directory_root, script_name = 'SinglePoint', copy_script = True, updated_vasp_settings = None):
+    """
+    Find which phonon calculations didn't finish and restart them.
+
+    Params
+    ----------
+    directory_root (str): glob expression for the directories to search.
+    """
+
+    from pymatgen.io.vasp.outputs import Vasprun
+    import glob
+    from DFTUtils import write_vasp_settings, copy_files_from_DFTUtilities
+    import os
+    import subprocess
+
+    # ----------------------------------- #
+    # find which phonon calculations didn't work:
+    displacement_directories = glob.glob(directory_root + '*/')
+
+    gone_wrong = []
+    for ind, disp_dir in enumerate(displacement_directories):
+        # os.chdir(disp_dir)
+        try:
+            vasprun = Vasprun(disp_dir + '/vasprun.xml')
+            if not vasprun.converged_electronic:
+                gone_wrong.append(disp_dir)
+        except:
+            gone_wrong.append(disp_dir)
+
+        # os.chdir('../')
+
+    # ----------------------------------- #
+    # Go through wrong directories and restart calculations:
+    for directory in gone_wrong:
+        print(f'Restarting {directory} calculation...')
+        os.chdir(directory)
+        
+        script_to_run = glob.glob('*' + script_name + '*.q')[0]
+        
+        if updated_vasp_settings != None:
+            write_vasp_settings(updated_vasp_settings)
+        
+        if copy_script == True:
+            copy_files_from_DFTUtilities(['HPC_Submission_Scripts/' + script_to_run])
+        
+        subprocess.run(['sbatch', script_to_run])
+
+        os.chdir('../')
+
+    return
+
+
+def write_pickle(filename, to_pickle):
+    """
+    Pickles whatever you pass.
+
+    Args
+    -------
+    filename (str): pickle file name.
+    to_pickle (Any): object, dict, etc. to pickle.
+    """
+
+    import pickle
+    # ------------------------------- #
+    # open pickle file
+    with open(filename, 'wb') as f:
+        # Use the highest protocol available for best performance and compatibility
+        pickle.dump(to_pickle, f, pickle.HIGHEST_PROTOCOL)
+
+    return
+
+def read_pickle(filename):
+    """
+    Unpickles whatever you pass.
+
+    Args
+    -------
+    filename (str): pickle file name.
+    to_pickle (Any): object, dict, etc. to pickle.
+    """
+
+    import pickle
+    # ------------------------------- #
+    # open pickle file
+    with open(filename, 'rb') as f:
+        data = pickle.load(f)
+
+    return data

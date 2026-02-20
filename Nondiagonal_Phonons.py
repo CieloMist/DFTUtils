@@ -15,7 +15,6 @@ from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
     # File io
 from ase.io import read, write
-from ase.build import niggli_reduce
 from asekpd import safe_kgrid_from_cell_volume
 # Pymatgen Stuff
 from pymatgen.io.lobster.inputs import Lobsterin
@@ -55,11 +54,7 @@ lobsterin = Lobsterin.standard_calculations_from_vasp_files(POSCAR_input = '../P
                                                             INCAR_input = '../INCAR',
                                                             POTCAR_input = '../POTCAR')
 
-# symmetrize structure
-struct = read('../relax.traj')
-niggli_reduce(struct)
-write('POSCAR', struct)
-
+lobsterin.write_POSCAR_with_standard_primitive(POSCAR_input = '../POSCAR', POSCAR_output= 'POSCAR', symprec = 0.000001)
 lobsterin.write_INCAR(incar_input='../INCAR', incar_output='INCAR', poscar_input = 'POSCAR')
 
 # Adjust Settings

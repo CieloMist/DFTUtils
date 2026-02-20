@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -A p32212        # which account to debit hours from
-#SBATCH --job-name="Relax_ASE"   # job name
+#SBATCH --job-name="FastRelax"   # job name
 #SBATCH -o myjob.0%j    #output and error file name (%j expands to jobI)
 #SBATCH -e myjob.e%j    # output and error file name (%j expands to jobI)
 
@@ -26,7 +26,7 @@ module load git/2.37.2
 
 #module load python-anaconda3
 source /home/${USER}/.bashrc
-source activate phonyop
+source activate atomistic
 #conda activate phonyop
-/home/ysx6266/.conda/envs/phonyop/bin/python Fast_Relax_ASE.py
+/home/ysx6266/.conda/envs/atomistic/bin/python Fast_Relax_ASE.py
 

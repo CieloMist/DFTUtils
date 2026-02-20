@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -A p32212        # which account to debit hours from
-#SBATCH --job-name="NEB_ASE"   # job name
+#SBATCH --job-name="NEB"   # job name
 #SBATCH -o myjob.0%j    #output and error file name (%j expands to jobI)
 #SBATCH -e myjob.e%j    # output and error file name (%j expands to jobI)
 
@@ -26,7 +26,7 @@ module load openblas/0.3.21-gcc-4.8.5
 
 #module load python-anaconda3
 source /home/${USER}/.bashrc
-source activate phonyop
+source activate atomistic
 #conda activate phonyop
-/home/ysx6266/.conda/envs/phonyop/bin/python NEB_ASE.py
+/home/ysx6266/.conda/envs/atomistic/bin/python NEB_ASE.py
 

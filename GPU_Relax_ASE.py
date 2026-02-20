@@ -21,7 +21,8 @@ from asekpd import safe_kgrid_from_cell_volume
 # ----------------------------------- #
 # Read in VASP settings
 os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
-os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
+os.environ["VASP_COMMAND"] = "mpirun -n 1 vasp_std"
+os.environ["OMP_NUM_THREADS"] = 1
 
     # Read Input Settings - all INCAR and POTCAR settings specified here
 with open('vasp_settings.json') as json_file:

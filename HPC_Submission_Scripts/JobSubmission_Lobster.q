@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -A p32212        # which account to debit hours from
-#SBATCH --job-name="DSTRESSSUB"   # job name
+#SBATCH --job-name="Lobster"   # job name
 #SBATCH -o myjob.0%j    #output and error file name (%j expands to jobI)
 #SBATCH -e myjob.e%j    # output and error file name (%j expands to jobI)
 
@@ -18,4 +18,4 @@ module load java/jdk1.8.0_191
 module load numpy/1.19.2
 module load openblas/0.3.21-gcc-4.8.5
 
-/home/ysx6266/.conda/envs/phonyop/bin/python Lobster.py
+/home/ysx6266/.conda/envs/atomistic/bin/python Lobster.py
