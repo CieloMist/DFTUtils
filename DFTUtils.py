@@ -52,6 +52,7 @@ def get_dos(orbitals = False, elements = False):
     """
     from pymatgen.io.vasp import Vasprun
     from pymatgen.electronic_structure.core import Spin, OrbitalType
+    import glob
 
     def produce_spin_separated_dos(pmg_dos, energies):
         # create numpy array which holds spin up, spin down dos
@@ -70,7 +71,8 @@ def get_dos(orbitals = False, elements = False):
 
     # ------------------------------- #
     # Import calculation results
-    calc = Vasprun('vasprun.xml', parse_projected_eigen = True)
+    vasprun_file = glob.glob('vasprun.xml*')[0] # handles zipped vasprun.xml
+    calc = Vasprun(vasprun_file, parse_projected_eigen = True)
 
     # Get spins and efermi
     efermi = calc.efermi
@@ -145,11 +147,14 @@ def get_bader_charges(clustering_tol=1e-4, return_volumes = True):
     """
 
     import os
+    import numpy as np
+    import glob
+
     from pymatgen.command_line.bader_caller import bader_analysis_from_path
     from pymatgen.core.structure import Structure
     from pymatgen.core.composition import Species
     from pymatgen.io.vasp import Outcar
-    import numpy as np
+    
     import scipy.cluster.hierarchy as hcluster
 
     # ---------------------------------------------------------- #
@@ -367,7 +372,7 @@ def render_povray(filename, struct, atom_render_settings, povray_settings, isosu
         povray_settings['bondatoms'] = bondpairs
 
     pov_object = write(filename + '.pov', struct, isosurface_data = isosurfaces, **atom_render_settings, povray_settings = povray_settings)
-
+    print(pov_object.path)
     pov_object.render(povray_executable='/gpfs/projects/p32212/Software_LifeEasy/povray/povray/unix/povray')
 
 
@@ -592,9 +597,9 @@ def interchange_atoms_ase_spglib(struct):
     from ase import Atoms
 
     if isinstance(struct, Atoms):
-        to_return = (struct.cell[:], struct.get_scaled_positions(), struct.get_chemical_symbols())
+        to_return = (struct.cell[:], struct.get_scaled_positions(), struct.get_atomic_numbers())
     else:
-        to_return = Atoms(symbols = struct[2], scaled_positions=struct[1], cell=struct[0])
+        to_return = Atoms(numbers = struct[2], scaled_positions=struct[1], cell=struct[0])
 
     return to_return
 
@@ -747,7 +752,7 @@ def repair_phonons(updated_vasp_settings = None):
 
 def repair_calcs(directory_root, script_name = 'SinglePoint', copy_script = True, updated_vasp_settings = None):
     """
-    Find which phonon calculations didn't finish and restart them.
+    Find which calculations didn't finish and restart them.
 
     Params
     ----------
@@ -760,39 +765,46 @@ def repair_calcs(directory_root, script_name = 'SinglePoint', copy_script = True
     import os
     import subprocess
 
+    origin = os.getcwd()
     # ----------------------------------- #
-    # find which phonon calculations didn't work:
-    displacement_directories = glob.glob(directory_root + '*/')
+    # find which calculations didn't work:
+    directories = glob.glob(directory_root)
+    print(directories)
 
     gone_wrong = []
-    for ind, disp_dir in enumerate(displacement_directories):
-        # os.chdir(disp_dir)
+    for ind, disp_dir in enumerate(directories):
         try:
-            vasprun = Vasprun(disp_dir + '/vasprun.xml')
+            vr = glob.glob(disp_dir + '/vasprun.xml*')[0] # handle zipped vasprun
+            vasprun = Vasprun(vr)
             if not vasprun.converged_electronic:
                 gone_wrong.append(disp_dir)
         except:
             gone_wrong.append(disp_dir)
 
-        # os.chdir('../')
-
     # ----------------------------------- #
     # Go through wrong directories and restart calculations:
     for directory in gone_wrong:
         print(f'Restarting {directory} calculation...')
-        os.chdir(directory)
         
-        script_to_run = glob.glob('*' + script_name + '*.q')[0]
-        
+        # ---------------------- #
+        # find top level dir
+        normpath = os.path.normpath(directory)
+        splitpath = normpath.split(os.sep)
+
+        # ----------------------- #
+        # change dirs and start calc
+        os.chdir(splitpath[0])
+
+        script_to_run = glob.glob(os.getcwd() + '/*' + script_name + '*.q')[0]
         if updated_vasp_settings != None:
             write_vasp_settings(updated_vasp_settings)
-        
-        if copy_script == True:
-            copy_files_from_DFTUtilities(['HPC_Submission_Scripts/' + script_to_run])
-        
-        subprocess.run(['sbatch', script_to_run])
 
-        os.chdir('../')
+        if copy_script == True:
+            script_to_copy = os.path.basename(script_to_run)
+            copy_files_from_DFTUtilities(['HPC_Submission_Scripts/' + script_to_copy])
+
+        # subprocess.run(['sbatch', script_to_run])
+        os.chdir(origin)
 
     return
 

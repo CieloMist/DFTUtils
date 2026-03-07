@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import subprocess
+import shutil as sh
     # System +
 import numpy as np
 # ASE Relaxation Stuff
@@ -37,6 +38,9 @@ with open('lobster_settings.json') as json_file:
 directory_suffix = lobster_settings.pop('directory_suffix')
 
 # Read VASP settings
+if not os.path.isfile('vasp_settings.json'):
+    sh.copy('../vasp_settings.json', '.')
+
 with open('vasp_settings.json') as json_file:
     vasp_settings = json.load(json_file)
     json_file.close()
