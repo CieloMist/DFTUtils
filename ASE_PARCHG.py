@@ -37,7 +37,7 @@ run_dft = parchg_settings.pop('run_dft', True)
 # ----------------------------------- #
 # Parchg directory
 dirlist = ['PARCHG' if directory_suffix == None else 'PARCHG_' + directory_suffix]
-make_directories_from_list(dirlist, delete = False)
+make_directories_from_list(dirlist, delete = True)
 os.chdir(dirlist[0])
 
 # ----------------------------------------------------------------------- #

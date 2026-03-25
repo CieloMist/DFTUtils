@@ -47,7 +47,7 @@ def write_settings_json(generic_settings, destination):
 ##########################################################################
 # Data Analysis
 ##########################################################################
-def get_dos(orbitals = False, elements = False):
+def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
     """Use pymatgen Vasprun w vasprun.xml to get the electronic DOS.
     """
     from pymatgen.io.vasp import Vasprun
@@ -78,11 +78,14 @@ def get_dos(orbitals = False, elements = False):
     efermi = calc.efermi
     energies = calc.tdos.energies - efermi
 
+    energy_match = (energies > energy_window[0]) & (energies < energy_window[1])
+
     energies_dict = {'Energies': energies}
 
     # ------------------------------- #
     # Get energies, total densities
     total = produce_spin_separated_dos(calc.tdos.densities, energies)
+    total = total
     total_dos = {'Total': total}
 
     # ------------------------------- #
@@ -845,3 +848,38 @@ def read_pickle(filename):
         data = pickle.load(f)
 
     return data
+
+
+def process_cohp_from_lobsterpy_analysis(ana, site_bond, orbital_bond, energy_window = None, length_window = [0,10], cohp_or_icohp = 'COHP'):
+    """
+    kinda a stupid function to process data from lobsterpy. In the future, rework so that the orbital resolved cohps are stored in a 2d numpy array and carry out the sum after all the if statements.
+    """
+    from pymatgen.electronic_structure.core import Spin
+
+    # pymatgen - handles actual data
+    comp = ana.completecoxx
+    energies = comp.energies - comp.efermi
+    orb_res_cohps = comp.orb_res_cohp
+
+    # lobsterpy - handles accessing data
+    orb_bonds = ana.get_site_orbital_resolved_labels()
+    relevant_sub_orbitals = orb_bonds[site_bond][orbital_bond]['relevant_sub_orbitals']
+    bond_labels = orb_bonds[site_bond][orbital_bond]['bond_labels']
+    
+    # Add each orbital bond e.g. [5d-2p]
+    cohp_to_collapse = np.zeros(len(energies))
+    for bond in bond_labels:
+        for ind, sub_orbital in enumerate(relevant_sub_orbitals):
+
+            length = orb_res_cohps[bond][sub_orbital]['length']
+            
+            if (length > length_window[0]) & (length < length_window[1]):
+                cohp_to_collapse += orb_res_cohps[bond][sub_orbital][cohp_or_icohp][Spin.up]
+                
+    # do processing to return correct energy window:
+    if energy_window != None:
+        match = (energies > energy_window[0]) & (energies < energy_window[1])
+        energies = energies[match]
+        cohp_to_collapse = cohp_to_collapse[match]
+
+    return cohp_to_collapse, energies
