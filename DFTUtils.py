@@ -47,17 +47,18 @@ def write_settings_json(generic_settings, destination):
 ##########################################################################
 # Data Analysis
 ##########################################################################
-def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
+def get_dos(orbitals = False, elements = False, orbitals_and_elements = False, energy_window = (-10,1)):
     """Use pymatgen Vasprun w vasprun.xml to get the electronic DOS.
     """
     from pymatgen.io.vasp import Vasprun
-    from pymatgen.electronic_structure.core import Spin, OrbitalType
+    from pymatgen.electronic_structure.core import Spin
     import glob
 
-    def produce_spin_separated_dos(pmg_dos, energies):
+    def produce_spin_separated_dos(pmg_dos, energies, energy_window):
         # create numpy array which holds spin up, spin down dos
         spin_separated_dos = np.zeros((2, energies.size))
-        
+        energy_match = (energies > energy_window[0]) & (energies < energy_window[1])
+
         # iterate through density object keys, return dos
         keys = list(pmg_dos.keys())
         for key in keys:
@@ -66,7 +67,7 @@ def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
             else:
                 spin_separated_dos[1,:] = -1 * pmg_dos[key]
 
-        return spin_separated_dos
+        return spin_separated_dos[:,energy_match]
 
 
     # ------------------------------- #
@@ -78,13 +79,12 @@ def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
     efermi = calc.efermi
     energies = calc.tdos.energies - efermi
 
-    energy_match = (energies > energy_window[0]) & (energies < energy_window[1])
-
-    energies_dict = {'Energies': energies}
+    energy_match = (energies > energy_window[0]) & (energies < energy_window[1]) # technically duplicated code; pass energy_match instead of energy_window to produce_spin_separated_dos
+    energies_dict = {'Energies': energies[energy_match]}
 
     # ------------------------------- #
     # Get energies, total densities
-    total = produce_spin_separated_dos(calc.tdos.densities, energies)
+    total = produce_spin_separated_dos(calc.tdos.densities, energies, energy_window)
     total = total
     total_dos = {'Total': total}
 
@@ -96,7 +96,7 @@ def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
         element_list = list(element_partial.keys())
         
         for element in element_list:
-            e_dos = produce_spin_separated_dos(element_partial[element].densities, energies)
+            e_dos = produce_spin_separated_dos(element_partial[element].densities, energies, energy_window)
             element_dos[str(element).strip('Element ')] = e_dos
 
     # ------------------------------- #
@@ -107,14 +107,82 @@ def get_dos(orbitals = False, elements = False, energy_window = (-10,1)):
         orbital_list = list(orbital_partial.keys())
 
         for orbital in orbital_list:
-            o_dos = produce_spin_separated_dos(orbital_partial[orbital].densities, energies)
+            o_dos = produce_spin_separated_dos(orbital_partial[orbital].densities, energies, energy_window)
             orbital_dos[str(orbital)] = o_dos
+
+    # ------------------------------- #
+    # get partial densities - orbitalwise and elementwise
+    orbital_and_element_dos = {}
+    if orbitals_and_elements == True:
+        element_list = calc.complete_dos.structure.elements
+
+        for element in element_list:
+            element_str = str(element).strip('Element ')
+            orbital_and_element_partial = calc.complete_dos.get_element_spd_dos(element_str)
+            orbital_list = list(orbital_and_element_partial.keys())
+
+            for orbital in orbital_list:
+                o_and_e_dos = produce_spin_separated_dos(orbital_and_element_partial[orbital].densities, energies, energy_window)
+                orbital_and_element_dos[element_str + ' ' + str(orbital)] = o_and_e_dos
         
 
-    all_results = energies_dict | total_dos | {'Element DOS': element_dos, 'Orbital DOS': orbital_dos}
+    all_results = energies_dict | total_dos | {'Element DOS': element_dos, 'Orbital DOS': orbital_dos, 'Element and Orbital DOS': orbital_and_element_dos}
     
     return all_results
 
+def get_suborbital_dos(complete_dos, site, shell):
+    """
+    Gets sub-orbital density of states from pymatgen complete_dos.
+
+    Args:
+    complete_dos: pymatgen completedos object
+    site: pymatgen PeriodicSite (accessed through calc.complete_dos.structure.sites[ind])
+    shell (str): orbital shell, eg. d, f, p, s
+    """
+    from pymatgen.electronic_structure.core import Orbital, Spin
+
+    orbital_mapping = {'s': [Orbital.s],
+                    'p': [Orbital.px, Orbital.py, Orbital.pz],
+                    'd': [Orbital.dx2, Orbital.dxy, Orbital.dyz, Orbital.dxz, Orbital.dz2],
+                    'f': [Orbital.f_3, Orbital.f_2, Orbital.f_1, Orbital.f0, Orbital.f1, Orbital.f2, Orbital.f3]}
+
+    str_orbital_mapping = {'s': ['s'],
+                           'p': ['px', 'py', 'pz'],
+                           'd': ['dx2', 'dxy', 'dyz', 'dxz', 'dz2'],
+                           'f': ['f-3', 'f-2', 'f-1', 'f0', 'f1', 'f2', 'f3']}
+
+    energies = complete_dos.energies - complete_dos.efermi
+    dos = np.zeros((len(orbital_mapping[shell]), energies.size))
+    for ind, sub_orbital in enumerate(orbital_mapping[shell]):
+        pmg_dos = complete_dos.get_site_orbital_dos(site, sub_orbital)
+        dos[ind, :] = pmg_dos.densities[Spin.up]
+    return energies, dos, str_orbital_mapping[shell]
+
+def plot_filled_dos_segment(energies, dos, ax, filled = True, energies_on_x = True, kwargs = {}):
+    """plots a DOS segment and fills beneath it.
+    
+    Args:
+    -------
+    energies (array): energies
+    DOS (array): DOS
+    ax (plt Axes): axis on which to plot
+    filled (bool): whether or not to fill beneath the DOS with a lighter version of the color.
+    energies_on_x (bool): horizontal or vertical DOS plot, horizontal default.
+    kwargs (dict): kwargs to pass to ax.plot. Combine common settings with specialized ones with common_settings | {'color': 'blue}
+    """
+
+    label = kwargs.pop('label', None)
+
+    x_plot, y_plot = energies, dos
+    fill = ax.fill_between
+    
+    if energies_on_x == False:
+        x_plot, y_plot = dos, energies
+        fill = ax.fill_betweenx
+    
+    if filled == True:
+        fill(x_plot, y_plot, alpha = 0.25, label = label, **kwargs)
+    ax.plot(x_plot, y_plot, label = [label if filled == False else None], **kwargs)
 
 def calculate_moment(x, y, n):
     """Calculate the nth moment of a given dataset.
@@ -606,6 +674,32 @@ def interchange_atoms_ase_spglib(struct):
 
     return to_return
 
+def symmetrize_cell(struct, primitive = True, symprec = 1e-4):
+    """
+    Symmetrizes a unit cell into primitive or conventional using spglib.
+    
+    Args:
+    struct (ASE Atoms): structure to symmetrize
+    primitive (bool): whether or not to return primitive (True) or conventional (False)
+    """
+    from DFTUtils import interchange_atoms_ase_spglib
+    import spglib
+
+    # convert ASE structure to spglib cell:
+    cell = interchange_atoms_ase_spglib(struct)
+    
+    # make spglib cell
+    conv_cell = spglib.standardize_cell(cell, 
+                                        to_primitive=primitive, 
+                                        no_idealize=False, 
+                                        symprec=symprec)
+
+    # reconvert to ASE
+    struct = interchange_atoms_ase_spglib(conv_cell)
+    struct.set_pbc([1,1,1])
+
+    return struct
+
 def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = None, directory_suffix = None):
     """
     Setup and submit phonons as a set of batch calculations via Phonopy.
@@ -636,7 +730,7 @@ def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = N
     directory_suffix = phonopy_settings.pop('directory_suffix', None)
     displacement_distance = phonopy_settings.pop('displacement_distance', 0.01)
 
-    phonons.generate_displacements(distance = displacement_distance)
+    phonons.generate_displacements(distance = displacement_distance, is_plusminus = True) # can move is_plusminus into settings later
     supercells = phonons.supercells_with_displacements
     # phonons.save('phonopy_disp.yaml')
     write_pickle('phonons.pickle', phonons)
@@ -710,6 +804,40 @@ def process_phonons():
 
     return phonons
 
+def modulate_phonons(phonons, q_point, band_index, amplitude = 0.01, phase_factor = 0, return_pmg = False):
+    """
+    Runs phonopy modulation given a phonopy object, qpoint, band, and amplitude.
+
+    Args:
+    phonons (phonopy object): phonopy object from process_phonons
+    q_point (NDArray): qpoint at which to modulate
+    band_index (int): band, indexes starting at 0
+    amplitude (float): amplitude of modulation in Angstroms
+    phase_factor (float): phase factor, eg. timing difference for the wave
+    """
+    from phonopy.phonon.modulation import Modulation
+    from DFTUtils import interchange_atoms_ase_phonopy
+
+    # ---------------------------------------------- #
+    # compile inputs into list for Modulation object
+    phonon_modes = [q_point, band_index, amplitude, phase_factor] # [q_point, band_index, amplitude, phase_factor] -> defaults: [[0,0,0], 0, 0, 0]
+    
+    # ---------------------------------------------- #
+    # Run modulation
+    mod = Modulation(phonons.dynamical_matrix, np.diag(phonons.supercell_matrix), [phonon_modes])
+    mod.run()
+
+    # ---------------------------------------------- #
+    # return modulated supercell
+    supercell = interchange_atoms_ase_phonopy(mod.get_modulated_supercells()[0])
+    supercell.set_pbc([1,1,1])
+
+    if return_pmg:
+        from pymatgen.io.ase import AseAtomsAdaptor
+        supercell = AseAtomsAdaptor.get_structure(supercell)
+
+    return supercell
+
 
 def repair_phonons(updated_vasp_settings = None):
     """
@@ -720,6 +848,8 @@ def repair_phonons(updated_vasp_settings = None):
     import glob
     from DFTUtils import write_vasp_settings
     import os
+    import subprocess
+    from ase.io import read
 
     # ----------------------------------- #
     # find which phonon calculations didn't work:
@@ -730,9 +860,11 @@ def repair_phonons(updated_vasp_settings = None):
         os.chdir(disp_dir)
 
         try:
-            vasprun = Vasprun('vasprun.xml')
-            if not vasprun.converged_electronic:
-                gone_wrong.append(disp_dir)
+            struct = read('Final.traj')
+            struct.get_potential_energy()
+            # vasprun = Vasprun('vasprun.xml')
+            # if not vasprun.converged_electronic:
+            #     gone_wrong.append(disp_dir)
         except:
             gone_wrong.append(disp_dir)
 
@@ -821,7 +953,7 @@ def write_pickle(filename, to_pickle):
     filename (str): pickle file name.
     to_pickle (Any): object, dict, etc. to pickle.
     """
-
+    import numpy as np
     import pickle
     # ------------------------------- #
     # open pickle file
@@ -840,7 +972,7 @@ def read_pickle(filename):
     filename (str): pickle file name.
     to_pickle (Any): object, dict, etc. to pickle.
     """
-
+    import numpy as np
     import pickle
     # ------------------------------- #
     # open pickle file
