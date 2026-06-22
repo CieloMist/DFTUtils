@@ -130,6 +130,182 @@ def get_dos(orbitals = False, elements = False, orbitals_and_elements = False, e
     
     return all_results
 
+##########################################################################
+# Data Analysis
+##########################################################################
+def get_qe_dos(orbitals = False, elements = False, orbitals_and_elements = False,
+            energy_window = (-10, 1), directory = '.', prefix = None, efermi = None):
+    """Parse Quantum ESPRESSO projwfc.x output to get the electronic DOS.
+
+    Spin-polarized (nspin=2) analogue of the pymatgen/VASP get_dos. Reads the
+    projwfc.x files '{prefix}.pdos_atm#N(X)_wfc#M(l)', whose columns for a
+    collinear spin-polarized run are:
+        E(eV)  ldos_up  ldos_dw  pdos_up(m=1) pdos_dw(m=1) ...
+    The l-resolved sums (columns 1 and 2) are used. This format is stable
+    across QE versions (verified through 7.5).
+
+    efermi : if None, it is auto-detected from a QE output file in `directory`
+    (handles metallic 'the Fermi energy is' and gapped/insulating
+    'highest occupied [, lowest unoccupied] level' lines); otherwise pass it
+    explicitly (eV).
+    """
+    import glob
+    import os
+    import re
+    from collections import defaultdict
+
+    fname_re = re.compile(
+        r"\.pdos_atm#(?P<atom>\d+)\((?P<elem>[A-Za-z]+)\)_wfc#(?P<wfc>\d+)\((?P<l>[spdfg])\)"
+    )
+
+    def produce_spin_separated_dos(up, dw, energies, energy_window):
+        # create numpy array which holds spin up, spin down dos
+        spin_separated_dos = np.zeros((2, energies.size))
+        energy_match = (energies > energy_window[0]) & (energies < energy_window[1])
+
+        # spin up positive, spin down negative (mirrored)
+        spin_separated_dos[0, :] = up
+        spin_separated_dos[1, :] = -1 * dw
+
+        return spin_separated_dos[:, energy_match]
+
+    def detect_efermi(directory):
+        # scan common QE output files for the Fermi level (eV), handling both
+        # metallic (smearing) and gapped/insulating (fixed-occupation) runs.
+        candidates = []
+        for ext in ('*.out', '*.pwo', '*.nscf.out', '*.scf.out', '*.projwfc.out'):
+            candidates += glob.glob(os.path.join(directory, ext))
+
+        num = r"([-\d.]+)"
+        # metallic: "the Fermi energy is X eV"  /  projwfc "Ef = X eV"
+        re_fermi = re.compile(r"(?:the Fermi energy is|Ef(?:\([^)]*\))?\s*=)\s*" + num)
+        # insulator with both edges: "highest occupied, lowest unoccupied level (ev):  X  Y"
+        re_homo_lumo = re.compile(
+            r"highest occupied, lowest unoccupied level\s*\(ev\):\s*" + num + r"\s+" + num)
+        # insulator, occupied edge only: "highest occupied level (ev):  X"
+        re_homo = re.compile(r"highest occupied level\s*\(ev\):\s*" + num)
+
+        for fpath in candidates:
+            try:
+                text = open(fpath, errors='ignore').read()
+            except OSError:
+                continue
+
+            # collect every match with its position; the value that appears
+            # last in the file is the one from the final/relevant calculation
+            found = []  # (position, efermi, kind)
+            for m in re_homo_lumo.finditer(text):
+                vbm, cbm = float(m.group(1)), float(m.group(2))
+                found.append((m.start(), 0.5 * (vbm + cbm), 'mid-gap (HOMO/LUMO midpoint)'))
+            for m in re_homo.finditer(text):
+                found.append((m.start(), float(m.group(1)), 'highest occupied level (VBM)'))
+            for m in re_fermi.finditer(text):
+                found.append((m.start(), float(m.group(1)), 'Fermi energy'))
+
+            if found:
+                pos, value, kind = max(found, key=lambda t: t[0])
+                print("Detected E_F = %.4f eV (%s) from %s"
+                      % (value, kind, os.path.basename(fpath)))
+                return value
+        return None
+
+    # ------------------------------- #
+    # Import calculation results
+    pattern = os.path.join(directory, (prefix or '') + '*.pdos_atm#*')
+    files = sorted(glob.glob(pattern))
+    if not files:
+        raise FileNotFoundError(
+            "No 'pdos_atm#...' files found in %r" % directory
+            + ((" with prefix %r" % prefix) if prefix else "")
+        )
+
+    # parse each file into an entry; read the (shared) energy grid once
+    entries = []
+    energies_raw = None
+    for f in files:
+        m = fname_re.search(os.path.basename(f))
+        if not m:
+            continue
+        arr = np.loadtxt(f, comments='#')
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if arr.shape[1] < 3:
+            raise ValueError(
+                "%s has %d columns; expected >=3 for a spin-polarized (nspin=2) "
+                "run. Is this really nspin=2?" % (os.path.basename(f), arr.shape[1])
+            )
+        if energies_raw is None:
+            energies_raw = arr[:, 0]
+        entries.append(dict(elem=m.group('elem'), l=m.group('l'),
+                            up=arr[:, 1], dw=arr[:, 2]))
+
+    # Get efermi and shift energies
+    if efermi is None:
+        efermi = detect_efermi(directory)
+        if efermi is None:
+            print("Warning: efermi not found; using 0.0 eV. Pass efermi=... to shift.")
+            efermi = 0.0
+    energies = energies_raw - efermi
+
+    energy_match = (energies > energy_window[0]) & (energies < energy_window[1])
+    energies_dict = {'Energies': energies[energy_match]}
+
+    # ------------------------------- #
+    # Get energies, total densities
+    total_up = sum(e['up'] for e in entries)
+    total_dw = sum(e['dw'] for e in entries)
+    total = produce_spin_separated_dos(total_up, total_dw, energies, energy_window)
+    total_dos = {'Total': total}
+
+    # ------------------------------- #
+    # get partial densities - elementwise
+    element_dos = {}
+    if elements == True:
+        up = defaultdict(lambda: 0.0)
+        dw = defaultdict(lambda: 0.0)
+        for e in entries:
+            up[e['elem']] = up[e['elem']] + e['up']
+            dw[e['elem']] = dw[e['elem']] + e['dw']
+
+        for element in up:
+            element_dos[element] = produce_spin_separated_dos(
+                up[element], dw[element], energies, energy_window)
+
+    # ------------------------------- #
+    # get partial densities - orbitalwise
+    orbital_dos = {}
+    if orbitals == True:
+        up = defaultdict(lambda: 0.0)
+        dw = defaultdict(lambda: 0.0)
+        for e in entries:
+            up[e['l']] = up[e['l']] + e['up']
+            dw[e['l']] = dw[e['l']] + e['dw']
+
+        for orbital in up:
+            orbital_dos[orbital] = produce_spin_separated_dos(
+                up[orbital], dw[orbital], energies, energy_window)
+
+    # ------------------------------- #
+    # get partial densities - orbitalwise and elementwise
+    orbital_and_element_dos = {}
+    if orbitals_and_elements == True:
+        up = defaultdict(lambda: 0.0)
+        dw = defaultdict(lambda: 0.0)
+        for e in entries:
+            key = e['elem'] + ' ' + e['l']
+            up[key] = up[key] + e['up']
+            dw[key] = dw[key] + e['dw']
+
+        for key in up:
+            orbital_and_element_dos[key] = produce_spin_separated_dos(
+                up[key], dw[key], energies, energy_window)
+
+    all_results = energies_dict | total_dos | {'Element DOS': element_dos,
+                                               'Orbital DOS': orbital_dos,
+                                               'Element and Orbital DOS': orbital_and_element_dos}
+
+    return all_results
+
 def get_suborbital_dos(complete_dos, site, shell):
     """
     Gets sub-orbital density of states from pymatgen complete_dos.
@@ -179,9 +355,12 @@ def plot_filled_dos_segment(energies, dos, ax, filled = True, energies_on_x = Tr
     if energies_on_x == False:
         x_plot, y_plot = dos, energies
         fill = ax.fill_betweenx
-    
-    if filled == True:
+        
+    if filled == True and energies_on_x == False:
+        fill(y_plot, x_plot, alpha = 0.25, label = label, **kwargs)
+    elif filled == True and energies_on_x == True:
         fill(x_plot, y_plot, alpha = 0.25, label = label, **kwargs)
+        
     ax.plot(x_plot, y_plot, label = [label if filled == False else None], **kwargs)
 
 def calculate_moment(x, y, n):
@@ -300,7 +479,7 @@ def get_strain(final, initial, standard_form=True):
     return strains
 
 
-def copy_files_from_DFTUtilities(filelist):
+def copy_files_from_DFTUtilities(filelist, basedir = '/projects/p32212/DefaultScripts/DFT_Utilities/'):
     """
     Args: filelist (list of strings): names of files to copy from DFTUtilities folder to current working directory.
     """
@@ -308,7 +487,7 @@ def copy_files_from_DFTUtilities(filelist):
     import shutil as sh
 
     for file in filelist:
-        sh.copy('/projects/p32212/DefaultScripts/DFT_Utilities/' + file, os.getcwd())
+        sh.copy(basedir + file, os.getcwd())
 
 def get_interstitials(struct, species):
     """
@@ -674,7 +853,7 @@ def interchange_atoms_ase_spglib(struct):
 
     return to_return
 
-def symmetrize_cell(struct, primitive = True, symprec = 1e-4):
+def symmetrize_cell(struct, primitive = True, symprec = 1e-4, print_spacegroup = False):
     """
     Symmetrizes a unit cell into primitive or conventional using spglib.
     
@@ -684,6 +863,7 @@ def symmetrize_cell(struct, primitive = True, symprec = 1e-4):
     """
     from DFTUtils import interchange_atoms_ase_spglib
     import spglib
+    from ase.spacegroup.symmetrize import check_symmetry
 
     # convert ASE structure to spglib cell:
     cell = interchange_atoms_ase_spglib(struct)
@@ -697,6 +877,9 @@ def symmetrize_cell(struct, primitive = True, symprec = 1e-4):
     # reconvert to ASE
     struct = interchange_atoms_ase_spglib(conv_cell)
     struct.set_pbc([1,1,1])
+
+    if print_spacegroup == True:
+        print(check_symmetry(struct))
 
     return struct
 
