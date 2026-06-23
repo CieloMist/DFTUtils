@@ -5,29 +5,23 @@ import os
 import sys
 import json
 import subprocess
+
     # System +
 import numpy as np
+
 # ASE Relaxation Stuff
-from ase.calculators.vasp import Vasp
-from ase.optimize import BFGS, BFGSLineSearch, GPMin, LBFGS, MDMin, FIRE
+from ase.optimize import BFGS, MDMin, FIRE2, LBFGS
 from ase.io.trajectory import Trajectory
+
     # NEB
 from ase.mep import NEB
 from ase.mep.dyneb import DyNEB
-    # Filters/Masks
-from ase.filters import FrechetCellFilter
-from ase.filters import StrainFilter
+
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
-# Pymatgen Stuff
-from pymatgen.io.vasp import Kpoints
+
 #MACE
 from mace.calculators import mace_mp
-# ----------------------------------- #
-# VASP Path Definitions
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
-os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
 # ----------------------------------------------------------------------- #
 # Read in settings
@@ -39,13 +33,7 @@ restart = neb_settings.pop('restart')
 n_images = neb_settings.pop('n_images')
 fmax = neb_settings.pop('fmax')
 optimizer = neb_settings.pop('optimizer')
-
-# ---------------------- #
-    # Read DFT Settings
-with open('vasp_settings.json') as json_file:
-    vasp_settings = json.load(json_file)
-    json_file.close()
-kpd = vasp_settings.pop('kpd')
+read_images = neb_settings.pop('read_images', False)
 
 # ---------------------- #
     # Read MACE Settings
@@ -53,24 +41,18 @@ with open('mace_settings.json') as json_file:
     mace_settings = json.load(json_file)
     json_file.close()
 
-fmax_mace = mace_settings.pop('fmax')
-mace_only = mace_settings.pop('mace_only')
-
-# ---------------------- #
-    # Filter Settings
-
-with open('ssneb_settings.json') as json_file:
-    ssneb_settings = json.load(json_file)
-    json_file.close()
-
-express = np.array(ssneb_settings.pop('express'))
+fmax_mace = mace_settings.pop('fmax', 0.05)
 
 # ---------------------------------- #
 # Set Initial Structure
 initial = read('Initial.traj', format = 'traj')
 final = read('Final.traj', format = 'traj')
 
-kpts_list = safe_kgrid_from_cell_volume(initial, kpd) # play around with maximizing density between structures later
+initial.calc = mace_mp(**mace_settings)
+final.calc = mace_mp(**mace_settings)
+
+initial.get_potential_energy()
+final.get_potential_energy()
 
 # ---------------------------------- #
 # Initialize Images and NEB
@@ -78,18 +60,10 @@ if restart == True:
     images = read('NEB.traj@-' + str(n_images) + ':')
     neb = NEB(images, **neb_settings)
 
-elif optimizer == 'ssneb':
-    try:
-        from tsase.neb import ssneb, qm_ssneb, fire_ssneb
-    except:
-        from tsase.neb import ssneb, qm_ssneb, fire_ssneb # hack to get tsase to work :(((
-    
-    # hack to get ssneb to work - final and initial atoms need calculators
-    initial.calc = mace_mp(**mace_settings)
-    final.calc = mace_mp(**mace_settings)
+elif read_images == True:
+    images = read('images.traj@:')
 
-    neb = ssneb(initial, final, numImages = n_images, express=express, **ssneb_settings)
-    images = neb.path
+    neb = DyNEB(images, **neb_settings)
 
 else:
     images = [initial]
@@ -101,60 +75,29 @@ else:
 
 # ----------------------------------- #
 # Set MACE Calculator
-for image in images:
+for image in neb.images:
     # Set Calculator
     calc = mace_mp(**mace_settings)
     image.calc = calc
 
+    # image.get_potential_energy()
+
+neb.images[0].get_forces()
+neb.images[-1].get_forces()
+
 # ---------------------------------- #
 # Set relaxer
-if optimizer == 'ssneb':
-    relaxer = fire_ssneb(neb)
-    relaxer.run = relaxer.minimize # hack to get run command to work
-elif optimizer == 'GPMin':
-    relaxer = GPMin(neb, trajectory = 'NEB.traj')
-elif optimizer == 'BFGS':
+if optimizer == 'BFGS':
     relaxer = BFGS(neb, trajectory = 'NEB.traj')
 elif optimizer == 'LBFGS':
     relaxer = LBFGS(neb, trajectory = 'NEB.traj')
 elif optimizer == 'MDMin':
     relaxer = MDMin(neb, trajectory = 'NEB.traj')
-elif optimizer == 'FIRE':
-    relaxer = FIRE(neb, trajectory = 'NEB.traj')
-    
-    
-# Run MACE optimization
+elif optimizer == 'FIRE' or optimizer == 'FIRE2':
+    relaxer = FIRE2(neb, trajectory = 'NEB.traj', use_abc = True, dt = 0.05, maxstep = 0.05, dtmax = 0.1)
 
-# Initial and final states
-initial.get_potential_energy()
-final.get_potential_energy()
+# # Initial and final states
+neb.images[0].get_potential_energy()
+neb.images[-1].get_potential_energy()
 
 relaxer.run(fmax_mace) # fmax = fmax_mace
-
-pots = np.zeros(len(images))
-if optimizer == 'ssneb':
-    with Trajectory('SSNEB.traj', 'a') as traj:
-        for ind, image in enumerate(images):
-            energy = image.get_potential_energy()
-            pots[ind] = energy
-            traj.write(image)
-
-    np.save('Pots.npy', pots)
-# ---------------------------------- #
-# VASP Optimization
-if mace_only != True:
-    for image in images:
-        # Set Calculator
-        calc = Vasp(**vasp_settings, kpts = kpts_list)
-        image.calc = calc
-
-    # Initial and final states
-    initial.get_potential_energy()
-    final.get_potential_energy()
-
-    # Run VASP optimization
-    relaxer.run(fmax = fmax)
-# ---------------------------------- #
-# Write out calculator states
-for ind, image in enumerate(images):
-    image.calc.write_json('calc_state_' + str(ind) + '.json')

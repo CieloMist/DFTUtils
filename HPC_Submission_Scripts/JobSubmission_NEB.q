@@ -19,7 +19,7 @@
 #------------------------------------------------------------------------------
 module purge all
 module use /hpc/software/spack_v17d2/spack/share/modules/linux-rhel17-x86_64/
-module load vasp/6.4.2-openmpi-intel-hdf5-cpu-only
+module load vasp/6.5.0-openmpi-intel-mkl-2021.4.0
 module load java/jdk1.8.0_191
 module load numpy/1.19.2
 module load openblas/0.3.21-gcc-4.8.5
