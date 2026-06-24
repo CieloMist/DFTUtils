@@ -10,7 +10,7 @@ from ase.calculators.espresso import Espresso, EspressoProfile
 
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
+from amlt import safe_kgrid_from_cell_volume # TEMPORARILY CHANGES FROM ASECLT TO AMLT
 
 # ----------------------------------- #
     # Read Input Settings - all INCAR and POTCAR settings specified here
