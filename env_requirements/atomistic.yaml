@@ -252,11 +252,13 @@ dependencies:
       - annotated-doc==0.0.4
       - annotated-types==0.7.0
       - archive-path==0.4.2
-      - ase==3.27.0
+      - ase==3.28.0
       - asn1crypto==1.5.1
       - asyncssh==2.19.0
+      - bcbio-gff==0.7.1
       - bcrypt==5.0.0
       - bibtexparser==1.4.3
+      - biopython==1.87
       - blake3==1.0.8
       - boto3==1.42.32
       - botocore==1.42.32
@@ -264,13 +266,19 @@ dependencies:
       - bravado-core==6.1.1
       - cachetools==6.2.6
       - calorine==3.3
+      - castepxbin==0.3.1
       - circus==0.19.0
       - click==8.3.1
       - click-spinner==0.1.10
       - colorama==0.4.6
+      - colormath==3.0.0
+      - configargparse==1.7.5
       - contourpy==1.3.3
       - coverage==7.13.4
       - cryptography==46.0.5
+      - cuda-bindings==13.2.0
+      - cuda-pathfinder==1.5.4
+      - cuda-toolkit==13.0.2
       - cycler==0.12.1
       - cyclopts==4.10.1
       - deprecated==1.3.1
@@ -280,8 +288,10 @@ dependencies:
       - dnspython==2.8.0
       - docstring-parser==0.17.0
       - docutils==0.22.4
+      - e3nn==0.4.4
       - elementpath==4.8.0
       - emmet-core==0.86.2
+      - f90nml==1.5.0
       - filelock==3.25.2
       - filetype==1.2.0
       - flatten-dict==0.4.2
@@ -292,6 +302,8 @@ dependencies:
       - fsspec==2026.2.0
       - future==1.0.0
       - gdown==5.2.1
+      - gitdb==4.0.12
+      - gitpython==3.1.50
       - greenlet==3.3.0
       - h5py==3.16.0
       - hf-xet==1.4.2
@@ -309,14 +321,20 @@ dependencies:
       - kiwisolver==1.5.0
       - latexcodec==3.0.1
       - lazy-loader==0.5
-      - lobsterpy==0.5.8
+      - lightning-utilities==0.15.3
+      - lmdb==2.2.0
+      - lobsterpy==0.6.1
+      - lxml==6.1.1
+      - mace==1.1.2
+      - mace-torch==0.3.16
       - mako==1.3.10
       - markdown-it-py==4.0.0
       - matplotlib==3.10.8
+      - matscipy==1.2.0
       - mdurl==0.1.2
       - mendeleev==1.1.0
       - monotonic==1.6
-      - monty==2026.2.18
+      - monty==2026.5.18
       - more-itertools==10.8.0
       - mp-api==0.45.15
       - mpcontribs-client==5.10.4
@@ -326,7 +344,24 @@ dependencies:
       - nest-asyncio2==1.7.2
       - networkx==3.6.1
       - numpy==2.4.4
+      - nvidia-cublas==13.1.0.3
+      - nvidia-cuda-cupti==13.0.85
+      - nvidia-cuda-nvrtc==13.0.88
+      - nvidia-cuda-runtime==13.0.96
+      - nvidia-cudnn-cu13==9.19.0.56
+      - nvidia-cufft==12.0.0.61
+      - nvidia-cufile==1.15.1.6
+      - nvidia-curand==10.4.0.35
+      - nvidia-cusolver==12.0.4.66
+      - nvidia-cusparse==12.6.3.3
+      - nvidia-cusparselt-cu13==0.8.0
+      - nvidia-nccl-cu13==2.28.9
+      - nvidia-nvjitlink==13.0.88
+      - nvidia-nvshmem-cu13==3.4.5
+      - nvidia-nvtx==13.0.85
       - oov-strgen==0.1
+      - opt-einsum==3.4.0
+      - opt-einsum-fx==0.1.4
       - orjson==3.11.5
       - packaging==26.0
       - palettable==3.3.3
@@ -344,6 +379,7 @@ dependencies:
       - plumpy==0.25.0
       - ply==3.11
       - pooch==1.9.0
+      - prettytable==3.17.0
       - propcache==0.4.1
       - psutil==5.9.8
       - psycopg==3.3.3
@@ -357,8 +393,9 @@ dependencies:
       - pydantic-settings==2.12.0
       - pyfiglet==0.8.post1
       - pyisemail==2.0.1
-      - pymatgen==2026.3.23
-      - pymatgen-core==2026.4.7
+      - pymatgen==2026.5.4
+      - pymatgen-core==2026.5.18
+      - pymatgen-io-espresso==0.0.1
       - pymatgen-io-validation==0.1.2
       - pymongo==4.16.0
       - pymysql==0.9.3
@@ -372,6 +409,7 @@ dependencies:
       - pytest-timeout==2.2.0
       - python-dotenv==1.2.1
       - python-graphviz==0.21
+      - python-hostlist==2.3.0
       - pytray==0.3.4
       - pytz==2021.3
       - pyvaspwfc==1.0
@@ -395,8 +433,10 @@ dependencies:
       - simpervisor==1.0.0
       - simplejson==3.20.2
       - smart-open==7.5.0
+      - smmap==5.0.3
       - spglib==2.6.0
       - sqlalchemy==2.0.46
+      - sumo==2.4.0.post1
       - swagger-spec-validator==3.0.4
       - symfc==1.6.1
       - sympy==1.14.0
@@ -406,6 +446,12 @@ dependencies:
       - tinycss2==1.4.0
       - toml==0.10.2
       - tomlkit==0.13.3
+      - torch==2.12.0+cpu
+      - torch-dftd==0.5.3
+      - torch-ema==0.3
+      - torchaudio==2.11.0+cpu
+      - torchmetrics==1.9.0
+      - torchvision==0.27.0+cpu
       - trame==3.12.0
       - trame-client==3.11.4
       - trame-common==1.1.3
@@ -413,6 +459,7 @@ dependencies:
       - trame-vtk==2.10.2
       - trame-vuetify==3.2.1
       - trimesh==4.11.5
+      - triton==3.6.0
       - typer==0.24.1
       - typing-inspection==0.4.2
       - ujson==5.11.0
@@ -422,6 +469,8 @@ dependencies:
       - vtk==9.6.0
       - wrapt==1.17.3
       - wslink==2.5.6
+      - xespresso==1.5.5
       - xmlschema==2.5.1
+      - xmltodict==1.0.4
       - yarl==1.23.0
 prefix: /home/ysx6266/.conda/envs/atomistic
