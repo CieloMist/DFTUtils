@@ -10,7 +10,7 @@ from ase.calculators.espresso import Espresso, EspressoProfile
 
     # File io
 from ase.io import read, write
-from amlt import safe_kgrid_from_cell_volume # TEMPORARILY CHANGES FROM ASECLT TO AMLT
+from kgrid import safe_kgrid_from_cell_volume # TEMPORARILY CHANGES FROM ASECLT TO AMLT
 
 # ----------------------------------- #
     # Read Input Settings - all INCAR and POTCAR settings specified here
@@ -42,7 +42,7 @@ calc = Espresso(profile = profile,
 
 struct.calc = calc
 
-struct.get_potential_energy()
+struct.get_potential_energy() # get_forces() triggers full calc
 
 write('Final.traj', struct, format = 'traj')
 

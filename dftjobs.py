@@ -10,25 +10,28 @@ conda activation -- and submits it via `slurmpy`.
 
     HPCs  : 'quest'    -- Northwestern University's Quest cluster
             'bridges2' -- PSC Bridges-2
-    Codes : 'vasp' / 'qe'
+    Codes : 'vasp' / 'qe' / None
 
-Everything that varies by cluster (and, where needed, by code/job type) lives in
-the editable registries below:
+`code` is optional: pass 'vasp' or 'qe' to load that code's module defaults and
+get default per-job-type scripts, or leave it as None for jobs that just run
+plain Python (no DFT code, no DFT modules) -- in that case use submit_script()
+or submit(command=...).
 
-    DEFAULT_ACCOUNTS    account to charge                       [hpc]
+Everything that varies by cluster (and, where needed, by code) lives in the
+editable registries below:
+
+    DEFAULT_ACCOUNTS    account to charge                         [hpc]
     DEFAULT_DIRECTIVES  always-on #SBATCH lines (mem, constraint) [hpc]
     CLUSTERS            partitions, walltime caps, cores/node, purge cmd [hpc]
-    DEFAULT_MODULES     module/setup lines, per job type        [hpc][code][job_type]
-    ENV_SETUP           conda activation etc.                   [hpc]
-    DEFAULT_PYTHON      interpreter for the ASE script          [hpc]
-    DEFAULT_SCRIPTS     folder holding your ASE scripts         [hpc]
-    CODES[code].scripts default ASE script filename             [job_type]
+    DEFAULT_MODULES     `module load` lines                       [hpc][code]
+    ENV_SETUP           conda activation etc.                     [hpc]
+    DEFAULT_PYTHON      interpreter for the ASE/python script     [hpc]
+    DEFAULT_SCRIPTS     folder holding your scripts               [hpc]
+    DEFAULT_RUN_DIR     working dir jobs cd into ("."=submit dir) [hpc]
+    CODES[code].scripts default script filename                   [job_type]
 
 Every submit method takes dry_run=True to render (and return) the sbatch script
 without submitting -- and without needing slurmpy installed.
-
->>> Lines marked 'TODO' are values not present in the scripts you shared; fill
-    them in (Bridges-2 modules/account, your scripts folders, post-proc scripts).
 """
 
 from __future__ import annotations
@@ -94,7 +97,7 @@ CLUSTERS: Dict[str, ClusterConfig] = {
 
 
 # ===========================================================================
-# Default ASE driver script per job type (filenames from your shared scripts).
+# Default driver script per job type (filenames from your shared scripts).
 # ===========================================================================
 @dataclass(frozen=True)
 class CodeConfig:
@@ -148,7 +151,7 @@ DEFAULT_DIRECTIVES: Dict[str, Dict[str, Union[str, int]]] = {
 
 # Module / setup lines, resolved per [hpc][code]. Values are full shell lines,
 # so `module use ...` works alongside `module load ...` (use the _load() helper
-# for the common case).
+# for the common case). Only consulted when a code is selected.
 DEFAULT_MODULES: Dict[str, Dict[str, List[str]]] = {
     "quest": {
         "qe":   _load("quantum-espresso/7.5-openmpi-gcc-13.3.0"),
@@ -156,27 +159,41 @@ DEFAULT_MODULES: Dict[str, Dict[str, List[str]]] = {
     },
     "bridges2": {
         "qe":   _load("QuantumEspresso/7.5-intel"),
-        "vasp": _load("VASP/6.5.1-oneapi"),
+        "vasp": _load("VASP/6.5.1-gcc+vtst"),
     },
 }
 
 # Shell lines run AFTER modules and BEFORE `cd` (conda activation, etc.).
+# On Bridges-2, oneAPI is sourced LAST so its MKL/runtime libs win
+# LD_LIBRARY_PATH at runtime; DEFAULT_PYTHON is pinned to an absolute conda
+# path so that ordering doesn't steal `python` from the conda env.
 ENV_SETUP: Dict[str, List[str]] = {
     "quest":    ["source ~/.bashrc", "source activate atomistic"],
-    "bridges2": ["source ~/.bashrc", "source activate atomistic"],
+    "bridges2": ["source ~/.bashrc",
+                 "source activate atomistic",              # conda first...
+                 "source /opt/intel/oneapi/setvars.sh"]    # ...MKL/oneAPI last so it wins at runtime
 }
 
-# Interpreter for the ASE script. "python" works after the conda activation
-# above; set an absolute path if you prefer not to rely on activation.
+# Interpreter for the script. On Bridges-2 this is an ABSOLUTE conda path so it
+# can't be shadowed by oneAPI's intelpython on PATH (see ENV_SETUP note).
 DEFAULT_PYTHON: Dict[str, str] = {
     "quest":    "python",
-    "bridges2": "python",
+    "bridges2": "/jet/home/dsmithc/.conda/envs/atomistic/bin/python",
 }
 
-# Folder holding your ASE driver scripts, so you call them by bare filename.
+# Folder holding your driver scripts, so you call them by bare filename.
 DEFAULT_SCRIPTS: Dict[str, str] = {
     "quest":    "/projects/p32212/DefaultScripts/DFTUtils/Python_Scripts",                    # your scripts folder
     "bridges2": "/ocean/projects/mat260005p/dsmithc/DefaultScripts/DFTUtils/Python_Scripts",  # your scripts folder
+}
+
+# Working directory the job `cd`s into before running (where the script looks
+# for its inputs/config and writes outputs). "." = the submission directory,
+# i.e. wherever you launched the job from. Distinct from DEFAULT_SCRIPTS, which
+# only locates the script file itself.
+DEFAULT_RUN_DIR: Dict[str, str] = {
+    "quest":    ".",
+    "bridges2": ".",
 }
 
 
@@ -185,35 +202,46 @@ DEFAULT_SCRIPTS: Dict[str, str] = {
 # ===========================================================================
 class DFTJobManager:
     """
-    Submit ASE-driven DFT jobs to a chosen HPC cluster with a chosen code.
+    Submit ASE-driven DFT (or plain Python) jobs to a chosen HPC cluster.
 
     Parameters
     ----------
-    hpc, code : str           'quest'|'bridges2', 'vasp'|'qe'.
+    hpc : str                 'quest' or 'bridges2'.
+    code : str, optional      'vasp', 'qe', or None. When 'vasp'/'qe', that
+                              code's DEFAULT_MODULES are loaded and the typed
+                              submit methods get a default script. When None,
+                              no DFT modules are loaded and you must supply a
+                              script=/command= (e.g. via submit_script()).
     account : str, optional   Defaults to DEFAULT_ACCOUNTS[hpc].
     default_nodes : int       Used when a submit call omits `nodes`.
     ntasks_per_node : int, optional
                               Default tasks/node (overridable per call).
     modules : list[str], optional
-                              Replace module loads for ALL job types of this
-                              instance (module *names*, one `module load` each).
+                              Replace module loads for ALL jobs of this instance
+                              (module *names*, one `module load` each). Useful
+                              with code=None to still load e.g. a python module.
     env_setup : list[str], optional      Replace ENV_SETUP[hpc].
     default_directives : dict, optional   Replace DEFAULT_DIRECTIVES[hpc].
     default_scripts_dir, python_exe : str, optional
                               Override DEFAULT_SCRIPTS[hpc] / DEFAULT_PYTHON[hpc].
+    default_run_dir : str, optional
+                              Working directory jobs `cd` into when `directory`
+                              is not passed. Overrides DEFAULT_RUN_DIR[hpc]
+                              (default "." = the submission directory).
+    bash_setup : str          Strictness line inserted after env setup, before
+                              `cd` (default "set -eo pipefail"; "" to omit).
     date_in_name : bool       Passed to slurmpy.
     scripts_dir, log_dir : str
                               Where slurmpy writes generated sbatch scripts/logs
                               (scripts_dir is distinct from default_scripts_dir).
     clear_old_logs : bool     If True, wipe previous *.out/*.err (and generated
-                              *.sh) from log_dir/scripts_dir at construction, so
-                              each session starts clean. See also clear_logs().
+                              *.sh) from log_dir/scripts_dir at construction.
     """
 
     def __init__(
         self,
         hpc: str,
-        code: str,
+        code: Optional[str] = None,
         account: Optional[str] = None,
         *,
         default_nodes: int = 1,
@@ -222,6 +250,7 @@ class DFTJobManager:
         env_setup: Optional[List[str]] = None,
         default_directives: Optional[Dict[str, Union[str, int]]] = None,
         default_scripts_dir: Optional[str] = None,
+        default_run_dir: Optional[str] = None,
         python_exe: Optional[str] = None,
         bash_setup: str = "set -eo pipefail",
         date_in_name: bool = False,
@@ -232,17 +261,22 @@ class DFTJobManager:
         hpc_key = hpc.lower()
         if hpc_key not in CLUSTERS:
             raise ValueError(f"Unknown HPC '{hpc}'. Choose: {sorted(CLUSTERS)}.")
-        code_key = _CODE_ALIASES.get(code.lower().replace(" ", "-"))
-        if code_key is None:
-            raise ValueError(
-                f"Unknown code '{code}'. Choose: 'vasp' or 'qe' "
-                f"(aliases: {sorted(set(_CODE_ALIASES) - {'vasp', 'qe'})})."
-            )
+
+        # code is optional: None -> no DFT code, no DFT modules.
+        if code is None:
+            code_key: Optional[str] = None
+        else:
+            code_key = _CODE_ALIASES.get(code.lower().replace(" ", "-"))
+            if code_key is None:
+                raise ValueError(
+                    f"Unknown code '{code}'. Choose: 'vasp', 'qe', or None "
+                    f"(aliases: {sorted(set(_CODE_ALIASES) - {'vasp', 'qe'})})."
+                )
 
         self._hpc_key = hpc_key
         self._code_key = code_key
         self.cfg = CLUSTERS[hpc_key]
-        self.code = CODES[code_key]
+        self.code = CODES[code_key] if code_key is not None else None
 
         account = account or DEFAULT_ACCOUNTS.get(hpc_key)
         if not account:
@@ -252,18 +286,24 @@ class DFTJobManager:
             )
         self.account = account
 
-        try:
-            self._modules = DEFAULT_MODULES[hpc_key][code_key]
-        except KeyError:
-            raise ValueError(
-                f"No modules configured for ({hpc_key}, {code_key}). Add them to "
-                f"DEFAULT_MODULES or pass modules=[...]."
-            )
+        # DFT module defaults only when a code is selected; otherwise empty
+        # (a code-less job can still load modules via modules= or extra_modules=).
+        if code_key is None:
+            self._modules = []
+        else:
+            try:
+                self._modules = DEFAULT_MODULES[hpc_key][code_key]
+            except KeyError:
+                raise ValueError(
+                    f"No modules configured for ({hpc_key}, {code_key}). Add them "
+                    f"to DEFAULT_MODULES or pass modules=[...]."
+                )
         self._modules_override = list(modules) if modules is not None else None
 
         self._env_setup = list(env_setup) if env_setup is not None else list(ENV_SETUP.get(hpc_key, []))
         self._default_directives = dict(default_directives) if default_directives is not None else dict(DEFAULT_DIRECTIVES.get(hpc_key, {}))
         self.default_scripts_dir = default_scripts_dir if default_scripts_dir is not None else DEFAULT_SCRIPTS.get(hpc_key)
+        self.default_run_dir = default_run_dir if default_run_dir is not None else DEFAULT_RUN_DIR.get(hpc_key, ".")
         self._python = python_exe or DEFAULT_PYTHON.get(hpc_key, "python")
         self.bash_setup = bash_setup
 
@@ -277,7 +317,7 @@ class DFTJobManager:
 
     # ------------------------------------------------------------------ #
     def script_path(self, name: str) -> str:
-        """Resolve an ASE-script name against default_scripts_dir (abs passes through)."""
+        """Resolve a script name against default_scripts_dir (abs passes through)."""
         if os.path.isabs(name):
             return name
         if not self.default_scripts_dir:
@@ -294,11 +334,13 @@ class DFTJobManager:
     def clear_logs(self, include_scripts: bool = True) -> int:
         """Delete slurm log files from previous runs in this manager's log_dir.
 
-        Removes only `*.out` and `*.err` in `self.log_dir` (the names slurmpy
-        writes), and -- when include_scripts=True -- the generated `*.sh` sbatch
-        files in `self.scripts_dir`. It never touches any other files or dirs.
-        Returns the number of files removed. Safe to call when the dirs don't
-        exist yet (returns 0).
+        include_scripts : bool
+            When True, also delete the generated `*.sh` files in scripts_dir.
+
+        Removes only `*.out` / `*.err` in `self.log_dir` (the names slurmpy
+        writes) and, optionally, `*.sh` in `self.scripts_dir`. Never touches any
+        other files or directories. Returns the number of files removed; safe to
+        call before the directories exist (returns 0).
         """
         patterns = [
             os.path.join(self.log_dir, "*.out"),
@@ -316,28 +358,100 @@ class DFTJobManager:
 
     # ------------------------------------------------------------------ #
     # Public submit methods
+    #
+    # Each forwards to _submit_job via **kw. See _submit_job for the full list
+    # of shared keyword arguments (time, nodes, ntasks_per_node, partition,
+    # script, script_args, command, mpi, python, gpu, depends_on, extra_modules,
+    # extra_setup, extra_directives, name, dry_run).
     # ------------------------------------------------------------------ #
-    def submit_relaxation(self, directory, **kw):
+    def submit_relaxation(self, directory=None, **kw):
+        """Submit a geometry/cell relaxation.
+
+        directory : str, optional
+            Calculation directory the job `cd`s into before running. Defaults to
+            the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
+        **kw :
+            Shared submit keywords (see _submit_job). With a code selected the
+            default script is CODES[code].scripts['relaxation']; with code=None
+            you must pass script= or command=.
+        """
         return self._submit_job("relaxation", directory, _name_prefix="relax", _default_time="04:00:00", **kw)
 
-    def submit_singlepoint(self, directory, **kw):
+    def submit_singlepoint(self, directory=None, **kw):
+        """Submit a single-point / SCF energy evaluation.
+
+        directory : str, optional
+            Calculation directory the job `cd`s into before running. Defaults to
+            the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
+        **kw :
+            Shared submit keywords (see _submit_job). Default script with a code
+            selected is CODES[code].scripts['singlepoint'].
+        """
         return self._submit_job("singlepoint", directory, _name_prefix="scf", _default_time="04:00:00", **kw)
 
-    def submit_postprocessing(self, directory, **kw):
+    def submit_postprocessing(self, directory=None, **kw):
+        """Submit a post-processing step (often chained after relax/SCF).
+
+        directory : str, optional
+            Calculation directory the job `cd`s into before running. Defaults to
+            the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
+        **kw :
+            Shared submit keywords (see _submit_job). Default script with a code
+            selected is CODES[code].scripts['postprocessing'].
+        """
         return self._submit_job("postprocessing", directory, _name_prefix="post", _default_time="04:00:00", **kw)
 
-    def submit_script(self, directory, script, **kw):
+    def submit_script(self, script, directory=None, **kw):
+        """Run one of your scripts by filename (no job-type assumptions).
+
+        script : str
+            Script filename, resolved against default_scripts_dir (an absolute
+            path is used unchanged). Executed as `<python> <script> [args]`.
+        directory : str, optional
+            Working/calculation directory the job `cd`s into before running.
+            Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
+        **kw :
+            Shared submit keywords (see _submit_job) -- commonly script_args,
+            time, nodes, ntasks_per_node, partition, depends_on, extra_modules,
+            extra_setup, extra_directives, name, dry_run. `name` defaults to the
+            script stem (plus the dir tag when a directory is given explicitly).
+        """
         base = os.path.splitext(os.path.basename(script))[0]
-        kw.setdefault("name", f"{base}_{_tag(directory)}")
+        if directory is not None:
+            kw.setdefault("name", f"{base}_{_tag(directory)}")
+        else:
+            kw.setdefault("name", base)
         return self._submit_job(None, directory, script=script, _name_prefix=base, _default_time="04:00:00", **kw)
 
-    def submit(self, directory, *, command, name, **kw):
+    def submit(self, directory=None, *, command, name, **kw):
+        """Run an arbitrary shell command as the job body (escape hatch).
+
+        directory : str, optional
+            Working directory the job `cd`s into before running `command`.
+            Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
+        command : str
+            Exact shell command to run -- no python/script wrapping is added.
+            Use this for non-Python tools (e.g. `bader CHGCAR`).
+        name : str
+            SLURM job name (required, since there's no script to derive it from).
+        **kw :
+            Shared submit keywords (see _submit_job).
+        """
         return self._submit_job(None, directory, command=command, name=name, _name_prefix="job", _default_time="04:00:00", **kw)
 
     def submit_workflow(self, steps: Sequence[Dict], *, dry_run: bool = False) -> List:
-        """Chained sequence; each step depends (afterok) on the prior. Each step
-        is a dict with `kind` in {'relaxation','singlepoint','postprocessing',
-        'script','custom'} plus that method's kwargs."""
+        """Submit a chained sequence; each step depends (afterok) on the prior.
+
+        steps : sequence of dict
+            Each dict has `kind` in {'relaxation','singlepoint','postprocessing',
+            'script','custom'} plus that method's kwargs (e.g. directory, time,
+            nodes, script). A `depends_on` is injected automatically linking each
+            step to the previous job id unless you supply your own.
+        dry_run : bool
+            Render every step instead of submitting.
+
+        Returns the list of job ids (or rendered scripts when dry_run=True).
+        """
         dispatch = {
             "relaxation": self.submit_relaxation,
             "singlepoint": self.submit_singlepoint,
@@ -386,8 +500,84 @@ class DFTJobManager:
         extra_directives: Optional[Dict[str, Union[str, int]]] = None,
         dry_run: bool = False,
     ):
+        """Build and submit (or render) one job. Central place for all keywords.
+
+        Parameters
+        ----------
+        job_type : str | None
+            Internal: 'relaxation'|'singlepoint'|'postprocessing' selects the
+            default script from CODES[code].scripts; None means no default
+            (submit_script/submit supply their own script/command).
+        directory : str | None
+            Calculation/working directory; the body does `cd {directory}` before
+            running. Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc],
+            "." = the submission directory) when None.
+        _name_prefix : str
+            Internal: prefix for the auto-generated job name "<prefix>_<dir-tag>".
+        _default_time : str
+            Internal: walltime used when `time` is not given.
+        name : str, optional
+            SLURM job name (-J). Defaults to "<_name_prefix>_<dir-tag>".
+        script : str, optional
+            Script filename to run (resolved via script_path). Overrides the
+            job-type default. Ignored if `command` is given.
+        script_args : str | sequence of str
+            Extra CLI arguments appended after the script (a list is joined with
+            spaces). E.g. "--encut 520" or ["--encut", "520"].
+        command : str, optional
+            Raw shell command to use as the run line instead of building
+            `<python> <script>`. Highest precedence; skips script resolution.
+        time : str | float, optional
+            Walltime as "HH:MM:SS", "D-HH:MM:SS", or a number of hours. Validated
+            against the partition's cap. Falls back to `_default_time`.
+        nodes : int, optional
+            Node count (-N). Defaults to the manager's default_nodes.
+        ntasks_per_node : int, optional
+            MPI tasks per node (--ntasks-per-node). Defaults to the per-instance
+            value or the cluster's cores_per_node.
+        partition : str, optional
+            SLURM partition. If omitted, auto-selected as the smallest partition
+            whose walltime cap fits `time` (or the GPU partition if gpu=True).
+        mpi : bool
+            If True, prepend the cluster launcher (e.g. `srun`) to the run line.
+            Leave False for ASE/driver scripts that spawn mpirun internally.
+        python : str, optional
+            Interpreter for this job, overriding the manager's default
+            (DEFAULT_PYTHON[hpc]).
+        gpu : bool
+            If True and no `partition` given, route to the cluster's GPU partition.
+        depends_on : sequence of int, optional
+            Job ids this job must wait for (submitted with SLURM `afterok`).
+        extra_modules : list of str, optional
+            Additional module *names* to `module load` for this job only.
+        extra_setup : list of str, optional
+            Additional shell lines inserted after env setup (e.g. `export ...`,
+            or probe commands like `which python`). Run before strict mode/`cd`.
+        extra_directives : dict, optional
+            Extra `#SBATCH` directives ({key: value}); override DEFAULT_DIRECTIVES.
+        dry_run : bool
+            If True, render and return the sbatch script text without submitting
+            (and without needing slurmpy installed).
+
+        Returns
+        -------
+        int | str | None
+            The slurm job id on submission, or the rendered script if dry_run.
+        """
         cfg = self.cfg
-        job_name = name or f"{_name_prefix}_{_tag(directory)}"
+        # Resolve the working directory: an explicit `directory` wins, otherwise
+        # fall back to the per-HPC default run directory ("." = submission dir).
+        explicit_dir = directory is not None
+        run_dir = directory if explicit_dir else self.default_run_dir
+        if not run_dir:
+            raise ValueError(
+                f"No directory given and no default run directory configured for "
+                f"'{cfg.name}'. Pass directory=, set default_run_dir=, or set "
+                f"DEFAULT_RUN_DIR['{cfg.name}']."
+            )
+        # When the directory is the per-HPC default, its basename adds nothing to
+        # the job name, so use just the prefix; otherwise tag with the dir.
+        job_name = name or (f"{_name_prefix}_{_tag(run_dir)}" if explicit_dir else _name_prefix)
         nodes = nodes or self.default_nodes
         ntpn = ntasks_per_node or self.ntasks_per_node or cfg.cores_per_node
         ntasks = nodes * ntpn
@@ -401,13 +591,18 @@ class DFTJobManager:
 
         # run line: raw command > named script > job-type default script
         if command is None:
-            if script is None:
+            if script is None and self.code is not None:
                 script = self.code.scripts.get(job_type)
-                if script is None:
+            if script is None:
+                if self.code is not None:
                     raise ValueError(
                         f"No default {self.code.name} script for job_type="
                         f"{job_type!r}; pass script= or command=."
                     )
+                raise ValueError(
+                    "No code was selected at init, so there is no default script; "
+                    "pass script= (e.g. via submit_script()) or command=."
+                )
             pieces: List[str] = []
             if mpi:
                 pieces.append(
@@ -422,7 +617,7 @@ class DFTJobManager:
             command = " ".join(pieces)
 
         module_lines = self._resolve_modules()
-        body = self._build_body(directory, command, module_lines, extra_modules, extra_setup)
+        body = self._build_body(run_dir, command, module_lines, extra_modules, extra_setup)
 
         slurm_kwargs: Dict[str, Union[str, int]] = {
             cfg.account_flag: self.account,
@@ -455,11 +650,13 @@ class DFTJobManager:
     # Helpers
     # ------------------------------------------------------------------ #
     def _resolve_modules(self) -> List[str]:
+        """Return the `module load`/setup lines for this job (override > code defaults)."""
         if self._modules_override is not None:
             return [f"module load {m}" for m in self._modules_override]
         return list(self._modules)
 
     def _build_body(self, directory, command, module_lines, extra_modules, extra_setup) -> str:
+        """Assemble the script body: purge -> modules -> env setup -> strict -> cd -> run."""
         lines: List[str] = [self.cfg.purge_command]
         lines += list(module_lines)
         lines += [f"module load {m}" for m in (extra_modules or [])]
@@ -475,6 +672,7 @@ class DFTJobManager:
         return "\n".join(lines)
 
     def _resolve_partition(self, partition, hours) -> str:
+        """Validate an explicit partition, or auto-pick the smallest that fits `hours`."""
         cfg = self.cfg
         if partition is not None:
             if partition not in cfg.partitions:
@@ -492,6 +690,7 @@ class DFTJobManager:
         )
 
     def _validate_walltime(self, partition, hours) -> None:
+        """Raise if the requested walltime exceeds the partition's cap."""
         cap = self.cfg.partitions[partition]
         if hours > cap + 1e-9:
             raise ValueError(
@@ -500,6 +699,7 @@ class DFTJobManager:
             )
 
     def _render_preview(self, job_name, slurm_kwargs, body) -> str:
+        """Render the sbatch script as text (matches what slurmpy would submit)."""
         lines = [
             "#!/bin/bash", "",
             f"#SBATCH -J {job_name}",
@@ -517,10 +717,12 @@ class DFTJobManager:
 # Helpers
 # ===========================================================================
 def _tag(directory: str) -> str:
+    """Short filename-safe label from a directory path (its basename)."""
     return os.path.basename(os.path.normpath(directory)) or "job"
 
 
 def _fmt_args(args: Union[str, Sequence[str]]) -> str:
+    """Normalize script_args (string or list) to a single arg string."""
     if not args:
         return ""
     if isinstance(args, (list, tuple)):
@@ -529,6 +731,7 @@ def _fmt_args(args: Union[str, Sequence[str]]) -> str:
 
 
 def _normalize_walltime(time: Union[str, float, int]) -> str:
+    """Accept 'HH:MM:SS', 'D-HH:MM:SS', or a number of hours -> SLURM string."""
     if isinstance(time, (int, float)):
         total_minutes = int(round(time * 60))
         h, m = divmod(total_minutes, 60)
@@ -537,6 +740,7 @@ def _normalize_walltime(time: Union[str, float, int]) -> str:
 
 
 def _to_hours(time: Union[str, float, int]) -> float:
+    """Convert a SLURM walltime string (or hours number) to float hours."""
     walltime = _normalize_walltime(time)
     days, rest = 0, walltime
     if "-" in rest:
@@ -555,27 +759,19 @@ def _to_hours(time: Union[str, float, int]) -> float:
 
 
 # ===========================================================================
-# Example usage (previews only) -- reproduces the four scripts you shared
+# Example usage (previews only)
 # ===========================================================================
 if __name__ == "__main__":
     def banner(t): print("\n" + "=" * 70 + f"\n{t}\n" + "=" * 70)
 
-    banner("QUEST + QE relaxation  (cf. Relax_QE.py)")
-    DFTJobManager("quest", "qe").submit_relaxation(
-        "calcs/Pt111/relax", nodes=2, ntasks_per_node=48,
-        partition="normal", time="48:00:00", dry_run=True)
-
-    banner("QUEST + QE single-point  (cf. QE_SinglePoint.py)")
+    banner("QUEST + QE single-point  (no directory -> runs in DEFAULT_SCRIPTS[quest])")
     DFTJobManager("quest", "qe").submit_singlepoint(
-        "calcs/Pt111/scf", nodes=8, ntasks_per_node=8,
-        partition="short", time="02:00:00", dry_run=True)
+        nodes=8, ntasks_per_node=8, partition="short", time="02:00:00", dry_run=True)
 
-    banner("QUEST + VASP relaxation  (cf. Relax_ASE.py)")
-    DFTJobManager("quest", "vasp").submit_relaxation(
-        "calcs/Fe2O3/relax", nodes=8, ntasks_per_node=8,
-        partition="short", time="04:00:00", dry_run=True)
+    banner("BRIDGES-2 + VASP relaxation  (explicit directory override)")
+    DFTJobManager("bridges2", "vasp").submit_relaxation(
+        "calcs/Fe2O3/relax", nodes=2, time="24:00:00", dry_run=True)
 
-    banner("QUEST + VASP single-point  (cf. ASE_SinglePoint.py)")
-    DFTJobManager("quest", "vasp").submit_singlepoint(
-        "calcs/Fe2O3/scf", nodes=8, ntasks_per_node=8,
-        partition="short", time="02:00:00", dry_run=True)
+    banner("BRIDGES-2, NO code -- run a plain Python script in the default dir")
+    DFTJobManager("bridges2").submit_script(
+        "make_E0.py", time="00:30:00", dry_run=True)
