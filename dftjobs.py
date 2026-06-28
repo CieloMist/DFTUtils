@@ -17,6 +17,11 @@ get default per-job-type scripts, or leave it as None for jobs that just run
 plain Python (no DFT code, no DFT modules) -- in that case use submit_script()
 or submit(command=...).
 
+SBATCH resources (nodes, tasks/node, partition, walltime, gpu, extra directives)
+are configured ONCE on the DFTJobManager at construction and apply to every job
+it submits -- they are not per-call arguments. What varies per call is only what
+to run and where (directory, script/command, name, depends_on, ...).
+
 Everything that varies by cluster (and, where needed, by code) lives in the
 editable registries below:
 
@@ -139,8 +144,9 @@ DEFAULT_ACCOUNTS: Dict[str, str] = {
     "bridges2": "mat260005p",    # PSC allocation
 }
 
-# #SBATCH directives applied to every job on the HPC (per-call extra_directives
-# override these). These appear in all your Quest scripts.
+# #SBATCH directives applied to every job on the HPC. With per-call
+# extra_directives removed, this (or the default_directives= init arg) is the
+# place to set custom directives like mem/constraint/qos.
 DEFAULT_DIRECTIVES: Dict[str, Dict[str, Union[str, int]]] = {
     "quest": {
         "mem-per-cpu": "4G",
@@ -183,7 +189,7 @@ DEFAULT_PYTHON: Dict[str, str] = {
 
 # Folder holding your driver scripts, so you call them by bare filename.
 DEFAULT_SCRIPTS: Dict[str, str] = {
-    "quest":    "/projects/p32212/DefaultScripts/DFTUtils/Python_Scripts",                    # your scripts folder
+    "quest":    "/projects/p32212/DefaultScripts/DFT_Utilities/Python_Scripts",                    # your scripts folder
     "bridges2": "/ocean/projects/mat260005p/dsmithc/DefaultScripts/DFTUtils/Python_Scripts",  # your scripts folder
 }
 
@@ -204,6 +210,9 @@ class DFTJobManager:
     """
     Submit ASE-driven DFT (or plain Python) jobs to a chosen HPC cluster.
 
+    SBATCH resources are set here and reused for every job this manager submits;
+    the submit methods take no resource arguments.
+
     Parameters
     ----------
     hpc : str                 'quest' or 'bridges2'.
@@ -213,15 +222,28 @@ class DFTJobManager:
                               no DFT modules are loaded and you must supply a
                               script=/command= (e.g. via submit_script()).
     account : str, optional   Defaults to DEFAULT_ACCOUNTS[hpc].
-    default_nodes : int       Used when a submit call omits `nodes`.
+
+    SBATCH resources (apply to every job from this manager)
+    -------------------------------------------------------
+    nodes : int               Nodes per job (-N).
     ntasks_per_node : int, optional
-                              Default tasks/node (overridable per call).
+                              Tasks/node (--ntasks-per-node); None -> the
+                              cluster's cores_per_node.
+    partition : str, optional SLURM partition; None -> auto-select the smallest
+                              partition whose walltime cap fits `walltime`.
+    walltime : str | float    Walltime ("HH:MM:SS", "D-HH:MM:SS", or hours).
+    gpu : bool                If True and partition is None, use the GPU partition.
+    default_directives : dict, optional
+                              Extra #SBATCH directives (mem, constraint, qos, ...)
+                              applied to every job. Replaces DEFAULT_DIRECTIVES[hpc].
+
+    Other configuration
+    -------------------
     modules : list[str], optional
                               Replace module loads for ALL jobs of this instance
                               (module *names*, one `module load` each). Useful
                               with code=None to still load e.g. a python module.
     env_setup : list[str], optional      Replace ENV_SETUP[hpc].
-    default_directives : dict, optional   Replace DEFAULT_DIRECTIVES[hpc].
     default_scripts_dir, python_exe : str, optional
                               Override DEFAULT_SCRIPTS[hpc] / DEFAULT_PYTHON[hpc].
     default_run_dir : str, optional
@@ -244,11 +266,14 @@ class DFTJobManager:
         code: Optional[str] = None,
         account: Optional[str] = None,
         *,
-        default_nodes: int = 1,
+        nodes: int = 1,
         ntasks_per_node: Optional[int] = None,
+        partition: Optional[str] = None,
+        walltime: Union[str, float] = "04:00:00",
+        gpu: bool = False,
+        default_directives: Optional[Dict[str, Union[str, int]]] = None,
         modules: Optional[List[str]] = None,
         env_setup: Optional[List[str]] = None,
-        default_directives: Optional[Dict[str, Union[str, int]]] = None,
         default_scripts_dir: Optional[str] = None,
         default_run_dir: Optional[str] = None,
         python_exe: Optional[str] = None,
@@ -307,8 +332,13 @@ class DFTJobManager:
         self._python = python_exe or DEFAULT_PYTHON.get(hpc_key, "python")
         self.bash_setup = bash_setup
 
-        self.default_nodes = default_nodes
+        # SBATCH resources -- fixed for every job this manager submits.
+        self.nodes = nodes
         self.ntasks_per_node = ntasks_per_node
+        self.partition = partition
+        self.walltime = walltime
+        self.gpu = gpu
+
         self.date_in_name = date_in_name
         self.scripts_dir = scripts_dir
         self.log_dir = log_dir
@@ -359,10 +389,11 @@ class DFTJobManager:
     # ------------------------------------------------------------------ #
     # Public submit methods
     #
-    # Each forwards to _submit_job via **kw. See _submit_job for the full list
-    # of shared keyword arguments (time, nodes, ntasks_per_node, partition,
-    # script, script_args, command, mpi, python, gpu, depends_on, extra_modules,
-    # extra_setup, extra_directives, name, dry_run).
+    # Each forwards to _submit_job via **kw. See _submit_job for the per-call
+    # keyword arguments: script, script_args, command, name, mpi, python,
+    # depends_on, extra_modules, extra_setup, dry_run. SBATCH resources (nodes,
+    # ntasks_per_node, partition, walltime, gpu, directives) are NOT per-call --
+    # they are set on the DFTJobManager at construction.
     # ------------------------------------------------------------------ #
     def submit_relaxation(self, directory=None, **kw):
         """Submit a geometry/cell relaxation.
@@ -371,11 +402,11 @@ class DFTJobManager:
             Calculation directory the job `cd`s into before running. Defaults to
             the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
         **kw :
-            Shared submit keywords (see _submit_job). With a code selected the
-            default script is CODES[code].scripts['relaxation']; with code=None
-            you must pass script= or command=.
+            Per-call keywords (see _submit_job). With a code selected the default
+            script is CODES[code].scripts['relaxation']; with code=None you must
+            pass script= or command=.
         """
-        return self._submit_job("relaxation", directory, _name_prefix="relax", _default_time="04:00:00", **kw)
+        return self._submit_job("relaxation", directory, _name_prefix="relax", **kw)
 
     def submit_singlepoint(self, directory=None, **kw):
         """Submit a single-point / SCF energy evaluation.
@@ -384,10 +415,10 @@ class DFTJobManager:
             Calculation directory the job `cd`s into before running. Defaults to
             the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
         **kw :
-            Shared submit keywords (see _submit_job). Default script with a code
+            Per-call keywords (see _submit_job). Default script with a code
             selected is CODES[code].scripts['singlepoint'].
         """
-        return self._submit_job("singlepoint", directory, _name_prefix="scf", _default_time="04:00:00", **kw)
+        return self._submit_job("singlepoint", directory, _name_prefix="scf", **kw)
 
     def submit_postprocessing(self, directory=None, **kw):
         """Submit a post-processing step (often chained after relax/SCF).
@@ -396,10 +427,10 @@ class DFTJobManager:
             Calculation directory the job `cd`s into before running. Defaults to
             the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
         **kw :
-            Shared submit keywords (see _submit_job). Default script with a code
+            Per-call keywords (see _submit_job). Default script with a code
             selected is CODES[code].scripts['postprocessing'].
         """
-        return self._submit_job("postprocessing", directory, _name_prefix="post", _default_time="04:00:00", **kw)
+        return self._submit_job("postprocessing", directory, _name_prefix="post", **kw)
 
     def submit_script(self, script, directory=None, **kw):
         """Run one of your scripts by filename (no job-type assumptions).
@@ -411,17 +442,17 @@ class DFTJobManager:
             Working/calculation directory the job `cd`s into before running.
             Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
         **kw :
-            Shared submit keywords (see _submit_job) -- commonly script_args,
-            time, nodes, ntasks_per_node, partition, depends_on, extra_modules,
-            extra_setup, extra_directives, name, dry_run. `name` defaults to the
-            script stem (plus the dir tag when a directory is given explicitly).
+            Per-call keywords (see _submit_job) -- commonly script_args,
+            depends_on, extra_modules, extra_setup, name, dry_run. `name`
+            defaults to the script stem (plus the dir tag when a directory is
+            given explicitly).
         """
         base = os.path.splitext(os.path.basename(script))[0]
         if directory is not None:
             kw.setdefault("name", f"{base}_{_tag(directory)}")
         else:
             kw.setdefault("name", base)
-        return self._submit_job(None, directory, script=script, _name_prefix=base, _default_time="04:00:00", **kw)
+        return self._submit_job(None, directory, script=script, _name_prefix=base, **kw)
 
     def submit(self, directory=None, *, command, name, **kw):
         """Run an arbitrary shell command as the job body (escape hatch).
@@ -435,18 +466,20 @@ class DFTJobManager:
         name : str
             SLURM job name (required, since there's no script to derive it from).
         **kw :
-            Shared submit keywords (see _submit_job).
+            Per-call keywords (see _submit_job).
         """
-        return self._submit_job(None, directory, command=command, name=name, _name_prefix="job", _default_time="04:00:00", **kw)
+        return self._submit_job(None, directory, command=command, name=name, _name_prefix="job", **kw)
 
     def submit_workflow(self, steps: Sequence[Dict], *, dry_run: bool = False) -> List:
         """Submit a chained sequence; each step depends (afterok) on the prior.
 
         steps : sequence of dict
             Each dict has `kind` in {'relaxation','singlepoint','postprocessing',
-            'script','custom'} plus that method's kwargs (e.g. directory, time,
-            nodes, script). A `depends_on` is injected automatically linking each
-            step to the previous job id unless you supply your own.
+            'script','custom'} plus that method's per-call kwargs (e.g. directory,
+            script, script_args). Resources come from this manager's init, so all
+            steps share the same nodes/partition/walltime. A `depends_on` is
+            injected automatically linking each step to the previous job id
+            unless you supply your own.
         dry_run : bool
             Render every step instead of submitting.
 
@@ -479,28 +512,25 @@ class DFTJobManager:
     def _submit_job(
         self,
         job_type: Optional[str],
-        directory: str,
+        directory: Optional[str],
         *,
         _name_prefix: str,
-        _default_time: str,
         name: Optional[str] = None,
         script: Optional[str] = None,
         script_args: Union[str, Sequence[str]] = "",
         command: Optional[str] = None,
-        time: Optional[Union[str, float]] = None,
-        nodes: Optional[int] = None,
-        ntasks_per_node: Optional[int] = None,
-        partition: Optional[str] = None,
         mpi: bool = False,
         python: Optional[str] = None,
-        gpu: bool = False,
         depends_on: Optional[Sequence[int]] = None,
         extra_modules: Optional[List[str]] = None,
         extra_setup: Optional[List[str]] = None,
-        extra_directives: Optional[Dict[str, Union[str, int]]] = None,
         dry_run: bool = False,
     ):
-        """Build and submit (or render) one job. Central place for all keywords.
+        """Build and submit (or render) one job. Central place for per-call keywords.
+
+        SBATCH resources (nodes, ntasks_per_node, partition, walltime, gpu, and
+        default_directives) come from the manager set at construction, not from
+        these arguments.
 
         Parameters
         ----------
@@ -513,39 +543,25 @@ class DFTJobManager:
             running. Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc],
             "." = the submission directory) when None.
         _name_prefix : str
-            Internal: prefix for the auto-generated job name "<prefix>_<dir-tag>".
-        _default_time : str
-            Internal: walltime used when `time` is not given.
+            Internal: prefix for the auto-generated job name.
         name : str, optional
-            SLURM job name (-J). Defaults to "<_name_prefix>_<dir-tag>".
+            SLURM job name (-J). Defaults to "<_name_prefix>" (plus the dir tag
+            when an explicit directory is given).
         script : str, optional
             Script filename to run (resolved via script_path). Overrides the
             job-type default. Ignored if `command` is given.
         script_args : str | sequence of str
             Extra CLI arguments appended after the script (a list is joined with
-            spaces). E.g. "--encut 520" or ["--encut", "520"].
+            spaces). E.g. "--config config.yaml" or ["--encut", "520"].
         command : str, optional
             Raw shell command to use as the run line instead of building
             `<python> <script>`. Highest precedence; skips script resolution.
-        time : str | float, optional
-            Walltime as "HH:MM:SS", "D-HH:MM:SS", or a number of hours. Validated
-            against the partition's cap. Falls back to `_default_time`.
-        nodes : int, optional
-            Node count (-N). Defaults to the manager's default_nodes.
-        ntasks_per_node : int, optional
-            MPI tasks per node (--ntasks-per-node). Defaults to the per-instance
-            value or the cluster's cores_per_node.
-        partition : str, optional
-            SLURM partition. If omitted, auto-selected as the smallest partition
-            whose walltime cap fits `time` (or the GPU partition if gpu=True).
         mpi : bool
             If True, prepend the cluster launcher (e.g. `srun`) to the run line.
             Leave False for ASE/driver scripts that spawn mpirun internally.
         python : str, optional
             Interpreter for this job, overriding the manager's default
-            (DEFAULT_PYTHON[hpc]).
-        gpu : bool
-            If True and no `partition` given, route to the cluster's GPU partition.
+            (DEFAULT_PYTHON[hpc] / python_exe).
         depends_on : sequence of int, optional
             Job ids this job must wait for (submitted with SLURM `afterok`).
         extra_modules : list of str, optional
@@ -553,8 +569,6 @@ class DFTJobManager:
         extra_setup : list of str, optional
             Additional shell lines inserted after env setup (e.g. `export ...`,
             or probe commands like `which python`). Run before strict mode/`cd`.
-        extra_directives : dict, optional
-            Extra `#SBATCH` directives ({key: value}); override DEFAULT_DIRECTIVES.
         dry_run : bool
             If True, render and return the sbatch script text without submitting
             (and without needing slurmpy installed).
@@ -578,13 +592,16 @@ class DFTJobManager:
         # When the directory is the per-HPC default, its basename adds nothing to
         # the job name, so use just the prefix; otherwise tag with the dir.
         job_name = name or (f"{_name_prefix}_{_tag(run_dir)}" if explicit_dir else _name_prefix)
-        nodes = nodes or self.default_nodes
-        ntpn = ntasks_per_node or self.ntasks_per_node or cfg.cores_per_node
+
+        # SBATCH resources from the manager (not per-call).
+        nodes = self.nodes
+        ntpn = self.ntasks_per_node or cfg.cores_per_node
         ntasks = nodes * ntpn
 
-        walltime = _normalize_walltime(time if time is not None else _default_time)
+        walltime = _normalize_walltime(self.walltime)
         hours = _to_hours(walltime)
-        if partition is None and gpu:
+        partition = self.partition
+        if partition is None and self.gpu:
             partition = cfg.gpu_partition
         partition = self._resolve_partition(partition, hours)
         self._validate_walltime(partition, hours)
@@ -628,8 +645,6 @@ class DFTJobManager:
         }
         for k, v in self._default_directives.items():
             slurm_kwargs.setdefault(k, v)
-        if extra_directives:
-            slurm_kwargs.update(extra_directives)
 
         if dry_run:
             preview = self._render_preview(job_name, slurm_kwargs, body)
@@ -686,7 +701,7 @@ class DFTJobManager:
                 return p
         raise ValueError(
             f"Walltime {hours:.2f} h exceeds the largest auto-select partition on "
-            f"{cfg.name} ({cfg.auto_partitions}). Pass partition= or reduce time."
+            f"{cfg.name} ({cfg.auto_partitions}). Set partition= or reduce walltime."
         )
 
     def _validate_walltime(self, partition, hours) -> None:
@@ -759,19 +774,19 @@ def _to_hours(time: Union[str, float, int]) -> float:
 
 
 # ===========================================================================
-# Example usage (previews only)
+# Example usage (previews only) -- resources set at init, not per call
 # ===========================================================================
 if __name__ == "__main__":
     def banner(t): print("\n" + "=" * 70 + f"\n{t}\n" + "=" * 70)
 
-    banner("QUEST + QE single-point  (no directory -> runs in DEFAULT_SCRIPTS[quest])")
-    DFTJobManager("quest", "qe").submit_singlepoint(
-        nodes=8, ntasks_per_node=8, partition="short", time="02:00:00", dry_run=True)
+    banner("QUEST + QE single-point  (resources configured at init)")
+    DFTJobManager("quest", "qe", nodes=8, ntasks_per_node=8,
+                  partition="short", walltime="02:00:00").submit_singlepoint(dry_run=True)
 
     banner("BRIDGES-2 + VASP relaxation  (explicit directory override)")
-    DFTJobManager("bridges2", "vasp").submit_relaxation(
-        "calcs/Fe2O3/relax", nodes=2, time="24:00:00", dry_run=True)
+    DFTJobManager("bridges2", "vasp", nodes=2, walltime="24:00:00").submit_relaxation(
+        "calcs/Fe2O3/relax", dry_run=True)
 
-    banner("BRIDGES-2, NO code -- run a plain Python script in the default dir")
-    DFTJobManager("bridges2").submit_script(
-        "make_E0.py", time="00:30:00", dry_run=True)
+    banner("BRIDGES-2, NO code -- plain Python script in the default run dir")
+    DFTJobManager("bridges2", walltime="00:30:00").submit_script(
+        "make_E0.py", dry_run=True)

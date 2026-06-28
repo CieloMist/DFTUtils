@@ -61,21 +61,22 @@ if (restart == True) and (os.path.exists(os.getcwd() + '/relax.traj')):
     # KPOINTS
 kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
-profile_settings = {'command': 'mpirun -n 96 pw.x -pd .true.', pseudo_dir} # change for efficiency later if you need
+profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change to explicit number of cores here
 profile = EspressoProfile(**profile_settings)
 
 # ----------------------------------- #
-# Pre-calculation
-calc = Espresso(profile = profile,
-                pseudopotentials = pseudopotentials,
-                input_data = qe_settings,
-                additional_cards=additional_cards,
-                kpts = kpts_list)
+# Pre-calculation - calculates wavefunctions once to allow restart from file later.
+if restart == False:
+    calc = Espresso(profile = profile,
+                    pseudopotentials = pseudopotentials,
+                    input_data = qe_settings,
+                    additional_cards=additional_cards,
+                    kpts = kpts_list)
 
-struct.calc = calc
+    struct.calc = calc
 
-# get initial potential energy to allow for restart from wavefunctions during relaxation
-struct.get_potential_energy()
+    # get initial potential energy to allow for restart from wavefunctions during relaxation
+    struct.get_potential_energy()
 
 # ----- #
 # second run - modify QE settings to allow restart from file
@@ -133,7 +134,7 @@ struct.get_potential_energy()
 
 projwfc_settings = {'projwfc': {'prefix': qe_settings['prefix'],
                                 'outdir': qe_settings['outdir'],
-                                'DeltaE': 0.01}}
+                                'DeltaE': 0.005}}
 from ase.io.espresso import write_fortran_namelist
 with open('projwfc.in', 'w') as file:
     write_fortran_namelist(file, input_data=projwfc_settings)
