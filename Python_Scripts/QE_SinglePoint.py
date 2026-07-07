@@ -4,6 +4,7 @@
 import os
 import sys
 import json
+import subprocess
 
 # ASE
 from ase.calculators.espresso import Espresso, EspressoProfile
@@ -31,42 +32,33 @@ struct = read('Initial.traj', format = 'traj')
     # KPOINTS
 kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
-profile_settings = {'command': 'pw.x', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
+profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
 profile = EspressoProfile(**profile_settings)
-# ----------------------------------- #
-# Set Calculator
-calc = Espresso(profile = profile,
-                pseudopotentials = pseudopotentials,
-                input_data = qe_settings,
-                kpts = kpts_list)
-
-struct.calc = calc
-
-struct.get_potential_energy() # get_forces() triggers full calc
-
-write('Final.traj', struct, format = 'traj')
 
 # ----------------------------------- #
 # High-Res DOS calculation:
 # Do DOS Projection
 # rerun calculation with tetrahedron method
-# qe_settings['system']['occupations'] = 'tetrahedra'
+qe_settings['system']['occupations'] = 'tetrahedra'
 
-# calc = Espresso(profile = profile,
-#                 pseudopotentials = pseudopotentials,
-#                 input_data = qe_settings,
-#                 additional_cards=additional_cards,
-#                 kpts = kpts_list)
+calc = Espresso(profile = profile,
+                pseudopotentials = pseudopotentials,
+                input_data = qe_settings,
+                additional_cards=additional_cards,
+                kpts = kpts_list)
 
-# struct.calc = calc
-# struct.get_potential_energy()
+struct.calc = calc
+struct.get_potential_energy()
 
-# projwfc_settings = {'projwfc': {'prefix': qe_settings['prefix'],
-#                                 'outdir': qe_settings['outdir'],
-#                                 'DeltaE': 0.01}}
-# from ase.io.espresso import write_fortran_namelist
-# with open('projwfc.in', 'w') as file:
-#     write_fortran_namelist(file, input_data=projwfc_settings)
+write('Final.traj', struct, format = 'traj')
 
-# subprocess.run('mpirun -np 1 projwfc.x -pd .true. -inp projwfc.in > projwfc.out', shell=True)
+projwfc_settings = {'projwfc': {'prefix': qe_settings['prefix'],
+                                'outdir': qe_settings['outdir'],
+                                'DeltaE': 0.01}}
+
+from ase.io.espresso import write_fortran_namelist
+with open('projwfc.in', 'w') as file:
+    write_fortran_namelist(file, input_data=projwfc_settings)
+
+subprocess.run('mpirun -np 1 projwfc.x -pd .true. -inp projwfc.in > projwfc.out', shell=True)
 

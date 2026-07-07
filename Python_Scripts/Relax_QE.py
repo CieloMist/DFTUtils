@@ -14,7 +14,7 @@ from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin, GoodOldQuasiNewton
     # Filters/Masks
 from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
-from ase.stressbox import stressbox
+# from ase.stressbox import stressbox
     # File io
 from ase.io import read, write
 from asekpd import safe_kgrid_from_cell_volume
@@ -41,14 +41,6 @@ filter_type = filter_settings.pop('filter', 'Frechet')
 optimizer = filter_settings.pop('optimizer', 'BFGS')
 fmax = filter_settings.pop('fmax', 0.005)
 restart = filter_settings.pop('restart', False)
-
-# cover stressbox case, passed as a sub dictionary to filter_settings
-try:
-    stressbox_settings = filter_settings.pop('stressbox_settings')
-    stressbox_settings['express'] = np.array(stressbox_settings['express'])
-    stressbox_settings['fixstrain'] = np.array(stressbox_settings['fixstrain'])
-except:
-    pass
 
 # ----------------------------------------------------------------------- #
 # Calculation Details
@@ -97,8 +89,6 @@ if filter_type == 'Frechet':
     struct_opt = FrechetCellFilter(struct, **filter_settings)
 elif filter_type == 'strain':
     struct_opt = StrainFilter(struct, **filter_settings)
-elif filter_type == 'stressbox':
-    struct_opt = stressbox(struct, ref_atom = struct.copy(), **stressbox_settings)
 else:
     struct_opt = struct.copy() # set no filter if no filter is provided
 

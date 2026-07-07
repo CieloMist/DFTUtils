@@ -432,6 +432,7 @@ dependencies:
       - shortuuid==1.0.13
       - simpervisor==1.0.0
       - simplejson==3.20.2
+      - slurmpy==0.0.8
       - smart-open==7.5.0
       - smmap==5.0.3
       - spglib==2.6.0

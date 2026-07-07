@@ -45,24 +45,23 @@ fmax_mace = mace_settings.pop('fmax', 0.05)
 
 # ---------------------------------- #
 # Set Initial Structure
-initial = read('Initial.traj', format = 'traj')
-final = read('Final.traj', format = 'traj')
+# initial = read('Initial.traj', format = 'traj')
+# final = read('Final.traj', format = 'traj')
 
-initial.calc = mace_mp(**mace_settings)
-final.calc = mace_mp(**mace_settings)
+# initial.calc = mace_mp(**mace_settings)
+# final.calc = mace_mp(**mace_settings)
 
-initial.get_potential_energy()
-final.get_potential_energy()
+# initial.get_potential_energy()
+# final.get_potential_energy()
 
 # ---------------------------------- #
 # Initialize Images and NEB
 if restart == True:
     images = read('NEB.traj@-' + str(n_images) + ':')
-    neb = NEB(images, **neb_settings)
+    neb = DyNEB(images, **neb_settings)
 
 elif read_images == True:
     images = read('images.traj@:')
-
     neb = DyNEB(images, **neb_settings)
 
 else:
@@ -70,7 +69,7 @@ else:
     images += [initial.copy() for i in range(n_images-2)]
     images += [final]
 
-    neb = NEB(images, **neb_settings)
+    neb = DyNEB(images, **neb_settings)
     neb.interpolate(method='idpp')
 
 # ----------------------------------- #

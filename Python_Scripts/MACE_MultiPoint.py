@@ -15,22 +15,22 @@ from asekpd import safe_kgrid_from_cell_volume
 # ----------------------------------- #
 # Read in MACE
     # Read Input Settings - all INCAR and POTCAR settings specified here
-with open('mace_settings.json') as json_file:
-    mace_settings = json.load(json_file)
+with open('MLIP_settings.json') as json_file:
+    MLIP_settings = json.load(json_file)
     json_file.close()
 
 # ----------------------------------------------------------------------- #
 # Calculation Details
     # Set Initial Structure
-images = read('Images.traj@:', format = 'traj')
+images = read('images.traj@:', format = 'traj')
 
 # ----------------------------------- #
 # Set Calculator
 
 for image in images:
-    calc = mace_mp(**mace_settings)
+    calc = mace_mp(**MLIP_settings)
     image.calc = calc
-    image.get_potential_energy()
+    image.get_forces()
 
 write('Images_Final.traj', images, format = 'traj')
 
