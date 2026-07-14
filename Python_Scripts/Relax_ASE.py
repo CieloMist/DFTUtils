@@ -9,7 +9,7 @@ import json
 import numpy as np
 # ASE Relaxation Stuff
 from ase.calculators.vasp import Vasp
-from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin, GoodOldQuasiNewton
+from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin, GoodOldQuasiNewton, FIRE2
     # Filters/Masks
 from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
@@ -86,6 +86,8 @@ elif optimizer == 'GOQN':
     relaxer = GoodOldQuasiNewton(struct_opt, trajectory = 'relax.traj', restart='GOQN.json')
 elif optimizer == 'MDMin':
     relaxer = MDMin(struct_opt, trajectory = 'relax.traj', restart = 'MDMin_restart.json')
+elif optimizer == 'FIRE2':
+    relaxer = FIRE2(struct_opt, trajectory = 'relax.traj', use_abc = True)
 else:
     relaxer = BFGS(struct_opt, trajectory = 'relax.traj', restart='BFGS_hessian.json')
     
