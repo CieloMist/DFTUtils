@@ -42,7 +42,7 @@ struct = read('Initial.traj', format = 'traj')
     # KPOINTS
 kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
-profile_settings = {'command': 'mpirun -np 64 pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
+profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
 profile = EspressoProfile(**profile_settings)
 
 # ----------------------------------- #
@@ -54,12 +54,12 @@ calc = Espresso(profile = profile,
                 kpts = kpts_list)
 
 struct.calc = calc
-# struct.get_potential_energy()
+struct.get_potential_energy()
 
 # ----------------------------------- #
 # hp.x
-# profile_settings = {'command': 'hp.x', 'pseudo_dir': '/projects/b1027/Pseudopotentials/QE_Pseudos/' + pseudo_type} # change for efficiency later if you need
-# profile = EspressoProfile(**profile_settings)
+profile_settings = {'command': 'hp.x', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
+profile = EspressoProfile(**profile_settings)
 
 # ----------------------------------- #
 # Set Calculator
@@ -76,4 +76,4 @@ from ase.io.espresso import write_fortran_namelist
 with open('hp.in', 'w') as file:
     write_fortran_namelist(file, input_data=SCHU_settings)
 
-subprocess.run('mpirun -np 64 hp.x -pd .true. -inp hp.in > hp_params.out', shell=True)
+subprocess.run('mpirun hp.x -pd .true. -inp hp.in > hp_params.out', shell=True)
