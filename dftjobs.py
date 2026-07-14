@@ -281,7 +281,7 @@ class DFTJobManager:
         date_in_name: bool = False,
         scripts_dir: str = "slurm-scripts",
         log_dir: str = "logs",
-        clear_old_logs: bool = False,
+        clear_old_logs: bool = True,
     ):
         hpc_key = hpc.lower()
         if hpc_key not in CLUSTERS:
