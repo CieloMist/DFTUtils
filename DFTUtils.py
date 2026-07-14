@@ -44,6 +44,18 @@ def write_settings_json(generic_settings, destination):
 
     return
 
+def pull_min_force_from_traj(traj):
+    """
+    Pulls the minimum force configuration from a trajectory (list of atomic configurations with calculators attached).
+    """
+    
+    forces = [np.max(image.get_forces()) for image in traj]
+    index = np.argmin(forces)
+    
+    return traj[index]
+
+pull_min_force_from_traj(structs)
+
 ##########################################################################
 # Data Analysis
 ##########################################################################
