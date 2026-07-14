@@ -54,8 +54,6 @@ def pull_min_force_from_traj(traj):
     
     return traj[index]
 
-pull_min_force_from_traj(structs)
-
 ##########################################################################
 # Data Analysis
 ##########################################################################
