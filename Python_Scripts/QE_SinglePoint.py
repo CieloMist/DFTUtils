@@ -30,7 +30,9 @@ additional_cards = qe_settings.pop('additional_cards', None)
 struct = read('Initial.traj', format = 'traj')
 
     # KPOINTS
-kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
+kpts_list = kpd
+if isinstance(kpd, int):
+    kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
 profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change for efficiency later if you need
 profile = EspressoProfile(**profile_settings)
@@ -39,7 +41,7 @@ profile = EspressoProfile(**profile_settings)
 # High-Res DOS calculation:
 # Do DOS Projection
 # rerun calculation with tetrahedron method
-qe_settings['system']['occupations'] = 'tetrahedra'
+# qe_settings['system']['occupations'] = 'tetrahedra'
 
 calc = Espresso(profile = profile,
                 pseudopotentials = pseudopotentials,

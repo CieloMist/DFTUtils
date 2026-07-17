@@ -51,7 +51,9 @@ if (restart == True) and (os.path.exists(os.getcwd() + '/relax.traj')):
     struct = read('relax.traj', format = 'traj')
 
     # KPOINTS
-kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
+kpts_list = kpd
+if isinstance(kpd, int):
+    kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
 profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change to explicit number of cores here
 profile = EspressoProfile(**profile_settings)
