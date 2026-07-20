@@ -896,7 +896,7 @@ def symmetrize_cell(struct, primitive = True, symprec = 1e-4, print_spacegroup =
 
     return struct
 
-def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = None, directory_suffix = None):
+def run_phonons(initial_struct, phonopy_settings, job_manager_settings, updated_vasp_settings = None, directory_suffix = None):
     """
     Setup and submit phonons as a set of batch calculations via Phonopy.
 
@@ -904,8 +904,8 @@ def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = N
     atoms (ASE Atoms):
     """
 
-
     from DFTUtils import interchange_atoms_ase_phonopy, copy_files_from_DFTUtilities, write_pickle
+    from dftjobs import DFTJobManager
     from ase.io import read, write
     from phonopy import Phonopy
     import subprocess
@@ -945,16 +945,14 @@ def run_phonons(initial_struct, phonopy_settings = {}, updated_vasp_settings = N
         struct.set_pbc([1,1,1])
         write('Initial.traj', struct, format = 'traj')
 
-        # get files from dftutils:
-        copy_files_from_DFTUtilities(['ASE_SinglePoint.py', 'HPC_Submission_Scripts/JobSubmission_SinglePoint.q'])
-
         if updated_vasp_settings == None:
             sh.copy('../../vasp_settings.json', 'vasp_settings.json')
         else:
             write_vasp_settings(updated_vasp_settings)
 
         # run calculation
-        subprocess.run(['sbatch','JobSubmission_SinglePoint.q'])
+        job = DFTJobManager(**job_manager_settings)
+        job.submit_singlepoint()
 
         os.chdir('../')
 
