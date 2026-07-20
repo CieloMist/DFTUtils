@@ -913,6 +913,10 @@ def run_phonons(initial_struct, phonopy_settings, job_manager_settings, updated_
     import os
 
     # ----------------------------------------------- #
+    # dry run for DFTJobManager
+    dry_run = job_manager_settings.pop('dry_run', False)
+
+    # ----------------------------------------------- #
     # Create phonons directory
     dirlist = ['Phonons' if directory_suffix == None else 'Phonons_' + directory_suffix]
     make_directories_from_list(dirlist, delete = True)
@@ -952,7 +956,7 @@ def run_phonons(initial_struct, phonopy_settings, job_manager_settings, updated_
 
         # run calculation
         job = DFTJobManager(**job_manager_settings)
-        job.submit_singlepoint()
+        job.submit_singlepoint(dry_run = dry_run)
 
         os.chdir('../')
 
