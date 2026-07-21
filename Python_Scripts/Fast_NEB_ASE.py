@@ -45,8 +45,8 @@ fmax_mace = mace_settings.pop('fmax', 0.05)
 
 # ---------------------------------- #
 # Set Initial Structure
-# initial = read('Initial.traj', format = 'traj')
-# final = read('Final.traj', format = 'traj')
+initial = read('Initial.traj', format = 'traj')
+final = read('Final.traj', format = 'traj')
 
 # initial.calc = mace_mp(**mace_settings)
 # final.calc = mace_mp(**mace_settings)
