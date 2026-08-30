@@ -45,11 +45,11 @@ except:
 
 # --------------------- #
 # Read MACE settings
-with open('MLIP_settings.json') as json_file:
-    MLIP_settings = json.load(json_file)
+with open('mace_settings.json') as json_file:
+    mace_settings = json.load(json_file)
     json_file.close()
 
-fmax_MLIP = MLIP_settings.pop('fmax')
+fmax_MLIP = mace_settings.pop('fmax')
 
 # ----------------------------------------------------------------------- #
 # Calculation Details
@@ -89,7 +89,7 @@ else:
 # ------------------------------------------------------------- #
 # MACE PRE-RELAXATION
 # default to MACE
-calc = mace_mp(**MLIP_settings)
+calc = mace_mp(**mace_settings)
 struct.calc = calc
 
 relaxer.run(fmax = fmax_MLIP)

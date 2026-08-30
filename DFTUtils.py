@@ -57,6 +57,76 @@ def pull_min_force_from_traj(traj, return_last = False):
         
     return traj[index]
 
+# Dimer setup from a NEB -----------------
+def get_neb_eigenmode(images, climbing_index = None, tangent_pair = None):
+    """Build an initial dimer eigenmode from a converged NEB band.
+
+    The climbing image already sits at the saddle, so a dimer seeded there needs only the
+    unstable mode -- NOT a displacement. Displacing would walk it off the saddle. The band
+    tangent is the cheapest good estimate of that mode; ASE's default is a random Gaussian
+    vector, which in 3N dimensions has essentially no overlap with the true mode and can
+    send the search to a different saddle entirely.
+
+    Args:
+    images (list of Atoms): the band, e.g. read('NEB.traj@-7:')
+    climbing_index (int): index of the saddle image. Defaults to the highest-energy image.
+    tangent_pair (list): two image indices [lo, hi]; mode ~ R[hi] - R[lo]. Defaults to the
+                         neighbours of the climbing image. Set this explicitly when the
+                         band is unevenly spaced -- a collapsed band gives a long, skewed
+                         R[ci+1] - R[ci-1] that points nowhere useful.
+
+    Returns:
+    saddle (Atoms): copy of the climbing image
+    mode (np.ndarray): unit eigenmode, shape (natoms, 3), zero on constrained atoms
+    info (dict): climbing index, tangent pair, barriers, and which atoms carry the mode
+    """
+    from ase.geometry import find_mic
+
+    energies = np.array([image.get_potential_energy() for image in images])
+
+    if climbing_index == None:
+        climbing_index = int(energies.argmax())
+    assert 0 < climbing_index < len(images) - 1, \
+        'highest image is an endpoint -- band not converged, nothing to refine'
+
+    saddle = images[climbing_index].copy()
+
+    if tangent_pair == None:
+        tangent_pair = [climbing_index - 1, climbing_index + 1]
+    lo, hi = tangent_pair
+
+    # Minimum image convention. If an atom crossed a periodic boundary between the two
+    # images, the raw position difference is a cell-length artifact and the 'tangent'
+    # points straight across the box.
+    displacement = images[hi].get_positions() - images[lo].get_positions()
+    displacement, _ = find_mic(displacement, saddle.get_cell(), saddle.pbc)
+
+    # The mode must live in the same free subspace the band relaxed in, or the dimer
+    # rotates into directions the calculator holds fixed.
+    free = np.ones(len(saddle), dtype = bool)
+    for constraint in saddle.constraints:
+        if type(constraint).__name__ == 'FixAtoms':
+            free[np.asarray(constraint.index)] = False
+    displacement[~free] = 0.0
+
+    norm = np.linalg.norm(displacement)
+    if norm == 0.0:
+        raise ValueError(f'tangent from images {lo} -> {hi} is zero in the free subspace')
+    mode = displacement / norm
+
+    amplitude = np.linalg.norm(mode, axis = 1)
+    carried_by = [[int(i), str(saddle.symbols[i]), float(amplitude[i])]
+                  for i in amplitude.argsort()[::-1][:5]]
+
+    info = {'climbing_index': int(climbing_index),
+            'tangent_pair': [int(lo), int(hi)],
+            'n_free': int(free.sum()),
+            'barrier_fwd': float(energies[climbing_index] - energies[0]),
+            'barrier_rev': float(energies[climbing_index] - energies[-1]),
+            'carried_by': carried_by}
+
+    return saddle, mode, info
+
 ##########################################################################
 # Data Analysis
 ##########################################################################
