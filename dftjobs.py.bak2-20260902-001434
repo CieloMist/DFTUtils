@@ -27,7 +27,7 @@ editable registries below:
 
     DEFAULT_ACCOUNTS    account to charge                         [hpc]
     DEFAULT_DIRECTIVES  always-on #SBATCH lines (mem, constraint) [hpc]
-    CLUSTERS            partitions, cores/node, purge + module init  [hpc]
+    CLUSTERS            partitions, walltime caps, cores/node, purge cmd [hpc]
     DEFAULT_MODULES     `module load` lines                       [hpc][code]
     ENV_SETUP           conda activation etc.                     [hpc]
     DEFAULT_PYTHON      interpreter for the ASE/python script     [hpc]
@@ -72,15 +72,6 @@ class ClusterConfig:
     purge_command: str = "module purge"
     launcher: str = "srun"                # only used when mpi=True
     account_flag: str = "account"
-    # Shell line that guarantees the `module` function exists, emitted before any
-    # module command. sbatch runs the body under a NON-LOGIN shell, so
-    # /etc/profile.d/* is never sourced and `module` is only present if the
-    # submitting environment happened to export the Lmod bash function (SLURM
-    # --export=ALL). A Jupyter kernel or IDE session that never initialized Lmod
-    # therefore yields "module: command not found", no MPI on PATH, and a
-    # downstream FileNotFoundError on 'mpirun'. The guard is idempotent: it is a
-    # no-op when `module` is already defined. Empty = emit nothing.
-    module_init: str = ""
 
 
 CLUSTERS: Dict[str, ClusterConfig] = {
@@ -107,7 +98,6 @@ CLUSTERS: Dict[str, ClusterConfig] = {
         default_partition="RM-shared",
         gpu_partition="GPU",
         purge_command="module purge",
-        module_init="type module &>/dev/null || source /etc/profile.d/z00_lmod.sh",
     ),
 }
 
@@ -744,10 +734,7 @@ class DFTJobManager:
 
     def _build_body(self, directory, command, module_lines, extra_modules, extra_setup) -> str:
         """Assemble the script body: purge -> modules -> env setup -> strict -> cd -> run."""
-        lines: List[str] = []
-        if self.cfg.module_init:
-            lines.append(self.cfg.module_init)
-        lines.append(self.cfg.purge_command)
+        lines: List[str] = [self.cfg.purge_command]
         lines += list(module_lines)
         lines += [f"module load {m}" for m in (extra_modules or [])]
         lines += list(self._env_setup)

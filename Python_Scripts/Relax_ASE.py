@@ -101,9 +101,9 @@ struct.calc.write_json('calc_state.json')
 
 # ----------------------------------- #
 # High-Res DOS calculation:
-struct_dos = struct.copy()
-vasp_settings['ismear'] = -5
-vasp_settings['lelf'] = True
-struct_dos.calc = Vasp(**vasp_settings, kpts = kpts_list)
-struct_dos.get_potential_energy()
+# struct_dos = struct.copy()
+# vasp_settings['ismear'] = -5
+# vasp_settings['lelf'] = True
+# struct_dos.calc = Vasp(**vasp_settings, kpts = kpts_list)
+# struct_dos.get_potential_energy()
 

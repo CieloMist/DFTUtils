@@ -27,13 +27,12 @@ editable registries below:
 
     DEFAULT_ACCOUNTS    account to charge                         [hpc]
     DEFAULT_DIRECTIVES  always-on #SBATCH lines (mem, constraint) [hpc]
-    CLUSTERS            partitions, cores/node, purge + module init  [hpc]
+    CLUSTERS            partitions, walltime caps, cores/node, purge cmd [hpc]
     DEFAULT_MODULES     `module load` lines                       [hpc][code]
     ENV_SETUP           conda activation etc.                     [hpc]
     DEFAULT_PYTHON      interpreter for the ASE/python script     [hpc]
     DEFAULT_SCRIPTS     folder holding your scripts               [hpc]
     DEFAULT_RUN_DIR     working dir jobs cd into ("."=submit dir) [hpc]
-    LOCAL_INSTALLS      self-built code installs (local_install=)  [hpc][code]
     CODES[code].scripts default script filename                   [job_type]
 
 Every submit method takes dry_run=True to render (and return) the sbatch script
@@ -72,15 +71,6 @@ class ClusterConfig:
     purge_command: str = "module purge"
     launcher: str = "srun"                # only used when mpi=True
     account_flag: str = "account"
-    # Shell line that guarantees the `module` function exists, emitted before any
-    # module command. sbatch runs the body under a NON-LOGIN shell, so
-    # /etc/profile.d/* is never sourced and `module` is only present if the
-    # submitting environment happened to export the Lmod bash function (SLURM
-    # --export=ALL). A Jupyter kernel or IDE session that never initialized Lmod
-    # therefore yields "module: command not found", no MPI on PATH, and a
-    # downstream FileNotFoundError on 'mpirun'. The guard is idempotent: it is a
-    # no-op when `module` is already defined. Empty = emit nothing.
-    module_init: str = ""
 
 
 CLUSTERS: Dict[str, ClusterConfig] = {
@@ -107,7 +97,6 @@ CLUSTERS: Dict[str, ClusterConfig] = {
         default_partition="RM-shared",
         gpu_partition="GPU",
         purge_command="module purge",
-        module_init="type module &>/dev/null || source /etc/profile.d/z00_lmod.sh",
     ),
 }
 
@@ -213,34 +202,6 @@ DEFAULT_RUN_DIR: Dict[str, str] = {
     "bridges2": ".",
 }
 
-# Self-built (non-module) code installations, selected with local_install=True.
-# Only the [hpc][code] pairs listed here support that flag; anything else raises,
-# so a typo can never silently fall back to the site module.
-#
-#   bin       prepended to PATH after env setup, so a bare `pw.x` in an ASE
-#             profile command resolves to this build instead of the module's.
-#   modules   REPLACES DEFAULT_MODULES[hpc][code] (module *names*).
-#   env_setup REPLACES ENV_SETUP[hpc].
-#
-# bridges2/qe is a QE 7.5 built from source with -DQE_ENABLE_OSCDFT=ON, which the
-# site QuantumEspresso/7.5-intel module lacks (it parses pw.x's -oscdft flag but
-# silently no-ops on it, since the OSCDFT code is compiled out).
-# NOTE the env_setup here deliberately drops ENV_SETUP["bridges2"]'s trailing
-# `source /opt/intel/oneapi/setvars.sh`: that path is an OLDER oneAPI tree
-# (MKL 2022.1.0 / MPI 2021.6.0) than the intel-oneapi/2023.2.1 module
-# (/opt/packages/oneapi/v2023.2.0) this build was compiled and linked against,
-# and sourcing it last would clobber MKLROOT/PATH with the mismatched libraries.
-LOCAL_INSTALLS: Dict[str, Dict[str, Dict[str, Union[str, List[str]]]]] = {
-    "bridges2": {
-        "qe": {
-            "bin": "/ocean/projects/mat260005p/dsmithc/Software/QuantumEspresso/"
-                   "qe-7.5-oscdft-install/bin",
-            "modules": ["intel-oneapi/2023.2.1"],
-            "env_setup": ["source ~/.bashrc", "source activate atomistic"],
-        },
-    },
-}
-
 
 # ===========================================================================
 # Job manager
@@ -261,12 +222,6 @@ class DFTJobManager:
                               no DFT modules are loaded and you must supply a
                               script=/command= (e.g. via submit_script()).
     account : str, optional   Defaults to DEFAULT_ACCOUNTS[hpc].
-    local_install : bool      Use the self-built install from LOCAL_INSTALLS
-                              instead of the site module: its `bin` is prepended
-                              to PATH and its modules/env_setup replace the
-                              defaults. Only configured for ('bridges2', 'qe');
-                              any other pairing raises ValueError rather than
-                              silently falling back to the module.
 
     SBATCH resources (apply to every job from this manager)
     -------------------------------------------------------
@@ -311,7 +266,6 @@ class DFTJobManager:
         code: Optional[str] = None,
         account: Optional[str] = None,
         *,
-        local_install: bool = False,
         nodes: int = 1,
         ntasks_per_node: Optional[int] = None,
         partition: Optional[str] = None,
@@ -357,31 +311,10 @@ class DFTJobManager:
             )
         self.account = account
 
-        # Self-built install (LOCAL_INSTALLS) in place of the site module.
-        # Validated eagerly: an unconfigured pairing is an error, never a silent
-        # fallback to the module build.
-        self.local_install = bool(local_install)
-        self._local: Optional[Dict[str, Union[str, List[str]]]] = None
-        if self.local_install:
-            try:
-                self._local = LOCAL_INSTALLS[hpc_key][code_key]
-            except KeyError:
-                configured = sorted(
-                    f"({h}, {c})"
-                    for h, codes in LOCAL_INSTALLS.items() for c in codes
-                )
-                raise ValueError(
-                    f"local_install=True is not configured for ({hpc_key}, "
-                    f"{code_key}). Configured: {', '.join(configured)}. Add an "
-                    f"entry to LOCAL_INSTALLS or drop local_install."
-                )
-
         # DFT module defaults only when a code is selected; otherwise empty
         # (a code-less job can still load modules via modules= or extra_modules=).
         if code_key is None:
             self._modules = []
-        elif self._local is not None:
-            self._modules = _load(*self._local["modules"])
         else:
             try:
                 self._modules = DEFAULT_MODULES[hpc_key][code_key]
@@ -392,12 +325,7 @@ class DFTJobManager:
                 )
         self._modules_override = list(modules) if modules is not None else None
 
-        if env_setup is not None:
-            self._env_setup = list(env_setup)
-        elif self._local is not None:
-            self._env_setup = list(self._local["env_setup"])
-        else:
-            self._env_setup = list(ENV_SETUP.get(hpc_key, []))
+        self._env_setup = list(env_setup) if env_setup is not None else list(ENV_SETUP.get(hpc_key, []))
         self._default_directives = dict(default_directives) if default_directives is not None else dict(DEFAULT_DIRECTIVES.get(hpc_key, {}))
         self.default_scripts_dir = default_scripts_dir if default_scripts_dir is not None else DEFAULT_SCRIPTS.get(hpc_key)
         self.default_run_dir = default_run_dir if default_run_dir is not None else DEFAULT_RUN_DIR.get(hpc_key, ".")
@@ -744,17 +672,10 @@ class DFTJobManager:
 
     def _build_body(self, directory, command, module_lines, extra_modules, extra_setup) -> str:
         """Assemble the script body: purge -> modules -> env setup -> strict -> cd -> run."""
-        lines: List[str] = []
-        if self.cfg.module_init:
-            lines.append(self.cfg.module_init)
-        lines.append(self.cfg.purge_command)
+        lines: List[str] = [self.cfg.purge_command]
         lines += list(module_lines)
         lines += [f"module load {m}" for m in (extra_modules or [])]
         lines += list(self._env_setup)
-        # After env setup (conda activation reorders PATH) but before
-        # extra_setup, so a per-call extra_setup can still override it.
-        if self._local is not None:
-            lines.append(f'export PATH="{self._local["bin"]}:$PATH"')
         lines += list(extra_setup or [])
         lines.append("")
         # Strict mode only AFTER environment setup, so sourcing ~/.bashrc and

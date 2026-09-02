@@ -30,6 +30,9 @@ kpd = qe_settings.pop('kpd')
 pseudopotentials = qe_settings.pop('pseudopotentials')
 pseudo_dir = qe_settings.pop('pseudo_dir')
 additional_cards = qe_settings.pop('additional_cards', None)
+profile_settings = qe_settings.pop('profile_settings', {'command': 'mpirun pw.x -pd .true.'})
+
+profile_settings['pseudo_dir'] = pseudo_dir
 
 # ----------------------------------- #
 # Read in filter settings
@@ -55,7 +58,6 @@ kpts_list = kpd
 if isinstance(kpd, int):
     kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
-profile_settings = {'command': 'mpirun pw.x -pd .true.', 'pseudo_dir': pseudo_dir} # change to explicit number of cores here
 profile = EspressoProfile(**profile_settings)
 
 # ----------------------------------- #
@@ -113,22 +115,22 @@ relaxer.run(fmax = fmax)
 # ----------------------------------- #
 # Do DOS Projection
 # rerun calculation with tetrahedron method
-qe_settings['system']['occupations'] = 'tetrahedra'
+# qe_settings['system']['occupations'] = 'tetrahedra'
 
-calc = Espresso(profile = profile,
-                pseudopotentials = pseudopotentials,
-                input_data = qe_settings,
-                additional_cards=additional_cards,
-                kpts = kpts_list)
+# calc = Espresso(profile = profile,
+#                 pseudopotentials = pseudopotentials,
+#                 input_data = qe_settings,
+#                 additional_cards=additional_cards,
+#                 kpts = kpts_list)
 
-struct.calc = calc
-struct.get_potential_energy()
+# struct.calc = calc
+# struct.get_potential_energy()
 
-projwfc_settings = {'projwfc': {'prefix': qe_settings['prefix'],
-                                'outdir': qe_settings['outdir'],
-                                'DeltaE': 0.005}}
-from ase.io.espresso import write_fortran_namelist
-with open('projwfc.in', 'w') as file:
-    write_fortran_namelist(file, input_data=projwfc_settings)
+# projwfc_settings = {'projwfc': {'prefix': qe_settings['prefix'],
+#                                 'outdir': qe_settings['outdir'],
+#                                 'DeltaE': 0.005}}
+# from ase.io.espresso import write_fortran_namelist
+# with open('projwfc.in', 'w') as file:
+#     write_fortran_namelist(file, input_data=projwfc_settings)
 
-subprocess.run('mpirun -np 1 projwfc.x -pd .true. -inp projwfc.in > projwfc.out', shell=True)
+# subprocess.run('mpirun -np 1 projwfc.x -pd .true. -inp projwfc.in > projwfc.out', shell=True)
