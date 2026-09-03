@@ -30,14 +30,16 @@ kpd = vasp_settings.pop('kpd')
 struct = read('Initial.traj', format = 'traj')
 
     # KPOINTS
-kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
+kpts_list = kpd
+if isinstance(kpd, int):
+    kpts_list = safe_kgrid_from_cell_volume(struct, kpd)
 
 # ----------------------------------- #
 # Set Calculator
 calc = Vasp(**vasp_settings, kpts = kpts_list)
 struct.calc = calc
 
-struct.get_potential_energy()
+struct.get_potential_energy(force_consistent=True)
 
 write('Final.traj', struct, format = 'traj')
 
