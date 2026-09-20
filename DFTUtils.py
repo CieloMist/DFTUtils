@@ -29,7 +29,7 @@ def write_vasp_settings(updated_vasp_settings):
     return
 
 # Write strain relaxation -----------------
-def write_settings_json(generic_settings, destination):
+def write_settings_json(destination, generic_settings):
     """Write filter type and mask OR mace calculation settings to a generic json file
 
     Args:

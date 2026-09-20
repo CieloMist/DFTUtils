@@ -1,5 +1,5 @@
 {"istart": 0, 
-"icharg": 0, 
+"icharg": 2, 
 "iniwav": 0, 
 "ediff": 1e-08, 
 "symprec": 1e-05, 
@@ -23,4 +23,4 @@
 "setups": "recommended",
 "xc": "pbesol",
 "ncore": 8,
-"kpar": 1}
+"kpar": 4}

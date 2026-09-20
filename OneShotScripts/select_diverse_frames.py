@@ -1,0 +1,377 @@
+"""Pick the n most mutually-distinct frames of an MD trajectory in MACE descriptor space.
+
+Greedy farthest-point sampling (FPS).  Two ways to measure how far apart two
+frames are:
+
+mode="atomic" (default)
+    Every atom of every frame is one point (its invariant MACE descriptor).
+    Frame score = the largest distance from any of its atoms to the nearest
+    atom of the SAME element already selected -- i.e. "how new is the
+    newest local environment in this frame".  A frame that is ordinary
+    except for one unusual H environment still scores high.  This is what you
+    want for Sn64H1-type cells, where a per-frame average is 98% Sn and hides
+    the H.
+
+mode="mean"
+    Each frame is one point: its per-element mean descriptors, concatenated.
+    Cheaper, and fine for pure Sn, but dilutes rare species / local events.
+
+The returned `scores[k]` is the coverage radius when frame k was picked.  It
+falls as the trajectory gets covered; when it flattens, more frames buy you
+little new information -- use that curve to choose n rather than guessing.
+
+Typical use
+-----------
+    from ase.io import read, write
+    from mace.calculators import mace_mp
+    from select_diverse_frames import mace_descriptors, fps_frames
+
+    traj = read("MD.traj", "20::5")                      # skip equilibration, stride
+    calc = mace_mp(model="mh-1", head="oc20_usemppbe", default_dtype="float64")
+    desc = mace_descriptors(traj, calc)
+    idx, scores = fps_frames(desc, traj, n=10)
+    write("selected.extxyz", [strip_calc(traj[i]) for i in idx])
+
+To avoid re-picking environments you have ALREADY labelled with DFT, pass their
+descriptors as `reference=` -- selection then starts from that coverage.
+
+Replay data (multihead fine-tuning)
+-----------------------------------
+    filter_xyz("replay-data-mh-1-omat-pbe.xyz", "replay_Sn.xyz", elements=("Sn",))
+    replay = read("replay_Sn.xyz", ":")
+    replay_desc = mace_descriptors(replay, calc)          # slow on CPU: use a GPU node
+    save_descriptors("replay_Sn_desc.npz", replay_desc)   # compute once, reuse
+    novelty = distance_to_reference(desc, traj, replay_desc, replay)
+
+Only same-element environments are compared, so the Sn-containing replay
+configurations cover every replay environment a Sn-H frame can be close to.
+
+CLI
+---
+    python select_diverse_frames.py MD.traj -n 10 --skip 20 --stride 5 -o selected.extxyz
+"""
+from __future__ import annotations
+
+import numpy as np
+from ase import Atoms
+
+
+def mace_descriptors(frames, calc, invariants_only: bool = True,
+                     num_layers: int = -1, dtype=np.float32, verbose: bool = True):
+    """Per-atom invariant MACE descriptors, one (n_atoms, D) array per frame.
+
+    num_layers=-1 concatenates every interaction layer (short- and longer-range
+    information).  The descriptors are the shared node features, so for a
+    multihead model (MACE-MH-1) the choice of head does not change them.
+    """
+    out = []
+    n = len(frames)
+    for k, atoms in enumerate(frames):
+        d = calc.get_descriptors(atoms, invariants_only=invariants_only,
+                                 num_layers=num_layers)
+        out.append(np.asarray(d, dtype=dtype))
+        if verbose and (k % 50 == 0 or k == n - 1):
+            print(f"  descriptors {k + 1}/{n}", flush=True)
+    return out
+
+
+def strip_calc(atoms: Atoms) -> Atoms:
+    """Copy without the MACE results, so they can't be mistaken for DFT labels."""
+    a = atoms.copy()          # Atoms.copy() drops the calculator
+    for key in ("energy", "free_energy", "stress", "virial"):
+        a.info.pop(key, None)
+    a.arrays.pop("forces", None)
+    return a
+
+
+def _species(frames, descriptors):
+    Z = [np.asarray(a.numbers) for a in frames]
+    for z, d in zip(Z, descriptors):
+        if len(z) != len(d):
+            raise ValueError("descriptor rows do not match atom count")
+    return Z
+
+
+def _species_scales(X, Zall):
+    """RMS distance of each element's environments from their centroid.
+
+    Dividing by it puts every element's distances in units of that element's
+    own spread, so the per-frame max over atoms is not dominated by whichever
+    element happens to have larger raw descriptor magnitudes.
+    """
+    scale = {}
+    for z in np.unique(Zall):
+        Xz = X[Zall == z]
+        s = float(np.sqrt(((Xz - Xz.mean(0)) ** 2).sum(1).mean()))
+        scale[int(z)] = s if s > 1e-12 else 1.0
+    return scale
+
+
+def _min_dist_update(mind, X, new):
+    """mind <- min(mind, distance from each row of X to its nearest row of `new`)."""
+    if len(new) == 0 or len(X) == 0:
+        return mind
+    # |x - y|^2 = |x|^2 + |y|^2 - 2 x.y, chunked to bound memory
+    ny = (new ** 2).sum(1)
+    step = max(1, int(2e7 // max(1, len(new))))
+    for s in range(0, len(X), step):
+        xs = X[s:s + step]
+        d2 = (xs ** 2).sum(1)[:, None] + ny[None, :] - 2.0 * xs @ new.T
+        np.maximum(d2, 0.0, out=d2)
+        mind[s:s + step] = np.minimum(mind[s:s + step], np.sqrt(d2.min(1)))
+    return mind
+
+
+def fps_frames(descriptors, frames, n: int, mode: str = "atomic",
+               first: int | None = None, reference=None, reference_frames=None,
+               per_species_scale: bool = True):
+    """Greedy farthest-point selection of `n` frames.
+
+    Parameters
+    ----------
+    descriptors : list of (n_atoms_k, D) arrays, from mace_descriptors().
+    frames : list of ase.Atoms matching `descriptors` (used for element labels).
+    n : number of frames to select.
+    mode : "atomic" (environment-level coverage, default) or "mean".
+    first : index of the seed frame.  Default: the frame farthest from the
+        trajectory centroid (an outlier), or, if `reference` is given, none --
+        selection starts from the reference coverage instead.
+    reference, reference_frames : descriptors + Atoms of structures you already
+        have DFT labels for.  Frames close to them are penalised.
+    per_species_scale : normalise each element's distances by its spread
+        (atomic mode).  See _species_scales.
+
+    Returns
+    -------
+    idx : list[int]      selected frame indices, in pick order.
+    scores : np.ndarray  coverage radius at each pick (monotone-ish decreasing).
+    """
+    nf = len(frames)
+    n = min(n, nf)
+    Z = _species(frames, descriptors)
+
+    if mode == "mean":
+        return _fps_mean(descriptors, Z, n, first, reference, reference_frames)
+    if mode != "atomic":
+        raise ValueError("mode must be 'atomic' or 'mean'")
+
+    X = np.concatenate(descriptors).astype(np.float64)
+    Zall = np.concatenate(Z)
+    fid = np.concatenate([np.full(len(z), k) for k, z in enumerate(Z)])
+
+    scale = _species_scales(X, Zall) if per_species_scale else None
+    if scale is not None:
+        X = X / np.array([scale[int(z)] for z in Zall])[:, None]
+
+    species = [int(z) for z in np.unique(Zall)]
+    masks = {z: Zall == z for z in species}
+    mind = np.full(len(X), np.inf)
+
+    def add(Xnew, Znew):
+        for z in species:
+            m = masks[z]
+            sel = Xnew[Znew == z]
+            if len(sel):
+                mind[m] = _min_dist_update(mind[m], X[m], sel)
+
+    def frame_scores():
+        s = np.full(nf, -np.inf)
+        np.maximum.at(s, fid, mind)
+        return s
+
+    idx, scores = [], []
+
+    if reference is not None:
+        Zr = _species(reference_frames, reference)
+        Xr = np.concatenate(reference).astype(np.float64)
+        Zr = np.concatenate(Zr)
+        if scale is not None:
+            Xr = Xr / np.array([scale.get(int(z), 1.0) for z in Zr])[:, None]
+        add(Xr, Zr)
+    else:
+        if first is None:
+            # outlier seed: frame with the environment farthest from its element centroid
+            far = np.zeros(len(X))
+            for z in species:
+                m = masks[z]
+                far[m] = np.linalg.norm(X[m] - X[m].mean(0), axis=1)
+            s = np.full(nf, -np.inf)
+            np.maximum.at(s, fid, far)
+            first = int(np.argmax(s))
+        idx.append(int(first))
+        scores.append(np.inf)
+        add(X[fid == first], Zall[fid == first])
+
+    while len(idx) < n:
+        s = frame_scores()
+        s[idx] = -np.inf
+        k = int(np.argmax(s))
+        idx.append(k)
+        scores.append(float(s[k]))
+        add(X[fid == k], Zall[fid == k])
+
+    return idx, np.array(scores)
+
+
+def _mean_vector(d, z, species):
+    parts = []
+    for e in species:
+        m = z == e
+        parts.append(d[m].mean(0) if m.any() else np.zeros(d.shape[1]))
+    return np.concatenate(parts)
+
+
+def _fps_mean(descriptors, Z, n, first, reference, reference_frames):
+    species = sorted({int(e) for z in Z for e in np.unique(z)})
+    V = np.array([_mean_vector(d, z, species) for d, z in zip(descriptors, Z)],
+                 dtype=np.float64)
+    mind = np.full(len(V), np.inf)
+    idx, scores = [], []
+    if reference is not None:
+        Zr = _species(reference_frames, reference)
+        R = np.array([_mean_vector(d, z, species) for d, z in zip(reference, Zr)])
+        mind = _min_dist_update(mind, V, R)
+    else:
+        if first is None:
+            first = int(np.argmax(np.linalg.norm(V - V.mean(0), axis=1)))
+        idx.append(int(first))
+        scores.append(np.inf)
+        mind = _min_dist_update(mind, V, V[[first]])
+    while len(idx) < n:
+        s = mind.copy()
+        s[idx] = -np.inf
+        k = int(np.argmax(s))
+        idx.append(k)
+        scores.append(float(s[k]))
+        mind = _min_dist_update(mind, V, V[[k]])
+    return idx, np.array(scores)
+
+
+def distance_to_reference(descriptors, frames, reference, reference_frames,
+                          per_species_scale: bool = True):
+    """Novelty of every frame with respect to a fixed reference set.
+
+    Returns one number per frame: the largest distance from any of its atoms
+    to the nearest SAME-element atom of the reference -- the same quantity
+    fps_frames() maximises, so the two are directly comparable.  Elements
+    absent from `frames` are ignored in the reference (e.g. the O in SnO2
+    replay structures), so a broad reference set costs nothing extra.
+
+    Use it as a diagnostic or secondary filter, e.g. rank the frames picked
+    against your own data by how far they sit from the replay set.
+    """
+    Z = _species(frames, descriptors)
+    X = np.concatenate(descriptors).astype(np.float64)
+    Zall = np.concatenate(Z)
+    fid = np.concatenate([np.full(len(z), k) for k, z in enumerate(Z)])
+    Zr = np.concatenate(_species(reference_frames, reference))
+    Xr = np.concatenate(reference).astype(np.float64)
+    if per_species_scale:
+        scale = _species_scales(X, Zall)
+        X = X / np.array([scale[int(z)] for z in Zall])[:, None]
+        Xr = Xr / np.array([scale.get(int(z), 1.0) for z in Zr])[:, None]
+    mind = np.full(len(X), np.inf)
+    for z in np.unique(Zall):
+        m, sel = Zall == z, Zr == z
+        if sel.any():
+            mind[m] = _min_dist_update(mind[m], X[m], Xr[sel])
+    out = np.full(len(frames), -np.inf)
+    np.maximum.at(out, fid, mind)
+    return out
+
+
+def filter_xyz(path, out, elements=("Sn",), mode: str = "any"):
+    """Stream an (ext)xyz file and keep configurations by element content.
+
+    mode="any"  keep configs containing at least one of `elements`
+    mode="all"  keep configs containing every one of `elements`
+    mode="only" keep configs made of nothing but `elements`
+
+    Plain-text streaming, so the 0.5 GB / 372k-config MH-1 replay file is
+    filtered in about a minute without loading it into ASE.  Returns the
+    number of configurations written.
+    """
+    want = set(elements)
+    kept = 0
+    with open(path) as f, open(out, "w") as g:
+        while True:
+            head = f.readline()
+            if not head.strip():
+                if not head:
+                    break
+                continue
+            na = int(head)
+            block = [head, f.readline()] + [f.readline() for _ in range(na)]
+            el = {ln.split()[0] for ln in block[2:]}
+            ok = (bool(el & want) if mode == "any" else
+                  want <= el if mode == "all" else
+                  el <= want if mode == "only" else None)
+            if ok is None:
+                raise ValueError("mode must be 'any', 'all' or 'only'")
+            if ok:
+                g.writelines(block)
+                kept += 1
+    return kept
+
+
+def save_descriptors(path, descriptors):
+    """Save a list of (n_atoms_k, D) arrays to one .npz (flat array + offsets)."""
+    lens = np.array([len(d) for d in descriptors])
+    np.savez(path, flat=np.concatenate(descriptors),
+             offsets=np.concatenate([[0], np.cumsum(lens)]))
+
+
+def load_descriptors(path):
+    """Inverse of save_descriptors()."""
+    z = np.load(path)
+    flat, off = z["flat"], z["offsets"]
+    return [flat[off[i]:off[i + 1]] for i in range(len(off) - 1)]
+
+
+def plot_scores(scores, ax=None):
+    """Coverage radius vs number picked.  Stop where it flattens."""
+    import matplotlib.pyplot as plt
+    ax = ax or plt.gca()
+    k = np.arange(1, len(scores) + 1)
+    finite = np.isfinite(scores)
+    ax.plot(k[finite], scores[finite], "o-")
+    ax.set_xlabel("frames selected")
+    ax.set_ylabel("coverage radius (scaled descriptor distance)")
+    return ax
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    from ase.io import read, write
+
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("traj")
+    p.add_argument("-n", type=int, default=10)
+    p.add_argument("--skip", type=int, default=0, help="drop the first SKIP frames")
+    p.add_argument("--stride", type=int, default=1)
+    p.add_argument("--mode", choices=("atomic", "mean"), default="atomic")
+    p.add_argument("--model", default="mh-1")
+    p.add_argument("--head", default="oc20_usemppbe")
+    p.add_argument("--device", default="cpu")
+    p.add_argument("-o", "--out", default="selected.extxyz")
+    a = p.parse_args()
+
+    from mace.calculators import mace_mp
+
+    frames = read(a.traj, f"{a.skip}::{a.stride}")
+    steps = list(range(a.skip, a.skip + a.stride * len(frames), a.stride))
+    calc = mace_mp(model=a.model, head=a.head, device=a.device, default_dtype="float64")
+    desc = mace_descriptors(frames, calc)
+    idx, scores = fps_frames(desc, frames, a.n, mode=a.mode)
+
+    picked = []
+    for i in idx:
+        at = strip_calc(frames[i])
+        at.info["md_frame"] = steps[i]
+        picked.append(at)
+    write(a.out, picked)
+    print(json.dumps({"md_frame": [steps[i] for i in idx],
+                      "score": [None if not np.isfinite(s) else round(float(s), 4)
+                                for s in scores]}, indent=1))
+    print(f"wrote {len(picked)} frames to {a.out}")

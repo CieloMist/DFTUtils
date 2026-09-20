@@ -1,0 +1,182 @@
+"""
+Generate symmetry-inequivalent interstitial H sites with `doped`, returned as ASE Atoms.
+
+Bulk (doped builds a supercell):
+
+    from generate_h_interstitials import generate_h_interstitials, kmesh
+    bulk, defects = generate_h_interstitials("Beta_Tin/Sn(1).cif")
+
+Slab (keep the cell you built, only search inside it):
+
+    bulk, defects = generate_h_interstitials(my_slab, generate_supercell=False)
+
+NOTE: doped uses multiprocessing.  `processes=1` is the default here so this is safe
+to call from a Jupyter notebook or an unguarded script.  If you set processes>1 you
+must call it from inside an `if __name__ == "__main__":` block.
+"""
+from __future__ import annotations
+
+import numpy as np
+from ase import Atoms
+from ase.io import read
+from doped.generation import DefectsGenerator
+from pymatgen.io.ase import AseAtomsAdaptor
+
+# 2*pi / (n*L), with n*L = 94 A from the slab k-point convergence study
+KSPACING = 0.0668  # Angstrom^-1
+
+
+def _to_ase(structure) -> Atoms:
+    """pymatgen Structure -> ASE Atoms (oxidation states and dangling site props stripped).
+
+    Site properties survive an ASE -> pymatgen -> ASE round trip.  If the input Atoms
+    carried tags (`ase.build.surface()` sets them to the layer index), the inserted
+    defect site has no tag, so pymatgen hands `ase.Atoms.set_tags()` a list containing
+    None and it raises `TypeError: int() argument ... not 'NoneType'`.  Backfill
+    numeric properties with 0 -- which keeps your layer tags usable for FixAtoms and
+    gives the interstitial tag 0 -- and drop non-numeric ones.
+    """
+    s = structure.copy()
+    s.remove_oxidation_states()
+    for prop, vals in list(s.site_properties.items()):
+        if not any(v is None for v in vals):
+            continue
+        present = [v for v in vals if v is not None]
+        if present and all(isinstance(v, (bool, int, float, np.integer, np.floating))
+                           for v in present):
+            s.add_site_property(prop, [0 if v is None else v for v in vals])
+        else:
+            s.remove_site_property(prop)
+    return AseAtomsAdaptor.get_atoms(s)
+
+
+def vacuum_thickness(atoms: Atoms) -> np.ndarray:
+    """Vacuum thickness (Angstrom) along each of the three cell axes."""
+    b = np.linalg.norm(2 * np.pi * np.array(atoms.cell.reciprocal()), axis=1)
+    d_perp = 2 * np.pi / b                     # interplanar spacing along each axis
+    frac = atoms.get_scaled_positions() % 1.0
+    out = np.zeros(3)
+    for i in range(3):
+        f = np.sort(frac[:, i])
+        gaps = np.diff(np.concatenate([f, [f[0] + 1.0]]))
+        out[i] = gaps.max() * d_perp[i]
+    return out
+
+
+def kmesh(atoms: Atoms, kspacing: float = KSPACING, vacuum_tol: float = 8.0) -> list[int]:
+    """Gamma-centred mesh at fixed reciprocal-space density.
+
+    Works for skewed cells, where `n * L` is meaningless -- doped's supercells are
+    minimum-atom-count and often strongly non-orthogonal.
+
+    Any axis carrying more than `vacuum_tol` of vacuum gets n = 1: sampling
+    dispersion across a vacuum gap is wasted effort, and a pure reciprocal-density
+    rule would silently ask for 2-3 k-points there.
+    """
+    b = np.linalg.norm(2 * np.pi * np.array(atoms.cell.reciprocal()), axis=1)
+    vac = vacuum_thickness(atoms)
+    return [1 if vac[i] > vacuum_tol else max(1, int(np.ceil(b[i] / kspacing)))
+            for i in range(3)]
+
+
+def generate_h_interstitials(
+    host,
+    generate_supercell: bool = True,
+    min_image_distance: float = 13.0,
+    min_atoms: int = 30,
+    all_wyckoffs: bool = True,
+    charge_states=(0,),
+    include_adsorbates: bool = False,
+    max_host_distance: float = 4.0,
+    processes: int = 1,
+):
+    """
+    Parameters
+    ----------
+    host : ase.Atoms, pymatgen Structure, or path to a structure file.
+    generate_supercell : if False, use `host` exactly as given (cell preserved) and
+        only search for interstitial sites inside it.  Use this for a slab you built.
+    min_image_distance : min distance between periodic images of the defect (A).
+        Only used when generate_supercell=True.  13 A clears MACE's receptive field
+        (~2 layers x 6 A), so the local environments are dilute-limit.
+    min_atoms : minimum atoms in the generated supercell (generate_supercell=True).
+    all_wyckoffs : keep every symmetry-inequivalent Voronoi site.  doped's default
+        (False) returns only the single highest-symmetry site.
+    charge_states : charge states to keep.  (0,) for MLIP training; None keeps all.
+    include_adsorbates : if the structure has vacuum, doped also proposes adsorbate
+        sites above the surface.  False suppresses them (interstitials only).
+    max_host_distance : drop any site whose nearest host atom is further than this.
+        Removes spurious Voronoi sites in the middle of a vacuum gap.
+    processes : doped multiprocessing.  Leave at 1 unless you wrap the call in
+        `if __name__ == "__main__":`.
+
+    Returns
+    -------
+    bulk : ase.Atoms                pristine reference cell.
+    defects : dict[str, ase.Atoms]  keyed by doped's defect name.  Each carries
+        `name`, `charge`, `h_frac_coords`, `h_height` and `nearest_host` in
+        `atoms.info`.
+    """
+    if isinstance(host, str):
+        host = read(host)
+
+    interstitial_kwargs = {"include_unique_wyckoffs": all_wyckoffs}
+    if not include_adsorbates:
+        interstitial_kwargs["vacuum_radius"] = 99.0  # never classify as a slab
+
+    kwargs = dict(extrinsic="H", generate_supercell=generate_supercell,
+                  processes=processes, interstitial_gen_kwargs=interstitial_kwargs)
+    if generate_supercell:
+        kwargs["supercell_gen_kwargs"] = {"min_image_distance": min_image_distance,
+                                          "min_atoms": min_atoms}
+
+    dg = DefectsGenerator(host, **kwargs)
+
+    bulk, defects = None, {}
+    for name, entry in dg.defect_entries.items():
+        if not name.startswith("H_i"):
+            continue
+        if charge_states is not None and entry.charge_state not in charge_states:
+            continue
+
+        atoms = _to_ase(entry.defect_supercell)
+        h = atoms.get_chemical_symbols().index("H")
+        others = [i for i in range(len(atoms)) if i != h]
+        nearest = float(atoms.get_distances(h, others, mic=True).min())
+        if nearest > max_host_distance:
+            continue  # site sits in vacuum, not in the material
+
+        atoms.info.update(name=name, charge=entry.charge_state,
+                          nearest_host=nearest, h_height=float(atoms.positions[h, 2]))
+        site = getattr(entry, "defect_supercell_site", None)
+        if site is not None:
+            atoms.info["h_frac_coords"] = tuple(float(x) for x in site.frac_coords)
+        defects[name] = atoms
+
+        if bulk is None:
+            bulk = _to_ase(entry.bulk_supercell)
+
+    return bulk, defects
+
+
+if __name__ == "__main__":
+    import sys
+    from ase.io import write
+
+    src = sys.argv[1] if len(sys.argv) > 1 else "Beta_Tin/Sn(1).cif"
+    slab_mode = "--slab" in sys.argv
+    bulk, defects = generate_h_interstitials(src, generate_supercell=not slab_mode)
+
+    print(f"\nreference cell : {bulk.get_chemical_formula()}  ({len(bulk)} atoms)")
+    print(f"cell lengths   : {bulk.cell.lengths().round(3)}")
+    print(f"cell angles    : {bulk.cell.angles().round(1)}")
+    print(f"vacuum / axis  : {vacuum_thickness(bulk).round(2)}")
+    print(f"suggested kmesh: {kmesh(bulk)}\n")
+    write("bulk_ref.traj", bulk)
+
+    for name, at in defects.items():
+        print(f"  {name:30s} {at.get_chemical_formula():8s} "
+              f"z={at.info['h_height']:6.2f}  nearest={at.info['nearest_host']:5.3f} A  "
+              f"kmesh={kmesh(at)}")
+        write(f"{name}.traj", at)
+    print(f"\nwrote {len(defects) + 1} .traj files")

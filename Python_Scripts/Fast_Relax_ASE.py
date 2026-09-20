@@ -49,8 +49,6 @@ with open('mace_settings.json') as json_file:
     mace_settings = json.load(json_file)
     json_file.close()
 
-fmax_MLIP = mace_settings.pop('fmax')
-
 # ----------------------------------------------------------------------- #
 # Calculation Details
     # Set Initial Structure
@@ -92,4 +90,4 @@ else:
 calc = mace_mp(**mace_settings)
 struct.calc = calc
 
-relaxer.run(fmax = fmax_MLIP)
+relaxer.run(fmax = fmax)

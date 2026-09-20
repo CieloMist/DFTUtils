@@ -1,0 +1,1 @@
+OneShotScripts is a directory which contains importable scripts geared towards a single project, instead of the more general Python_Scripts/ or DFT_Utilities. For example, generate_h_interstitials.py is a meant exclusively for the SnH project - could be used for another one, but I'm not willing to make the script more general at this time.

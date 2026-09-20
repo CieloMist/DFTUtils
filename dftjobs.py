@@ -160,7 +160,7 @@ DEFAULT_ACCOUNTS: Dict[str, str] = {
 # place to set custom directives like mem/constraint/qos.
 DEFAULT_DIRECTIVES: Dict[str, Dict[str, Union[str, int]]] = {
     "quest": {
-        "mem-per-cpu": "4G",
+        "mem-per-cpu": "3G",
         "constraint": "[quest10|quest11|quest12|quest13]",
     },
     "bridges2": {},
