@@ -298,7 +298,6 @@ if __name__ == "__main__":
 def h_site_grid(host: Atoms, target_size: int = 32, target_shape: str = "sc",
                 size_tolerance: float = 0.0, all_wyckoffs: bool = True,
                 supercell_matrix=None, dedup_tol: float = 0.05,
-                include_adsorbates: bool = False, max_host_distance: float = 4.0,
                 **shape_kwargs):
     """All candidate interstitial H positions in a compact supercell.
 
@@ -318,16 +317,9 @@ def h_site_grid(host: Atoms, target_size: int = 32, target_shape: str = "sc",
         e.g. the orthogonal Sn64 cell of conventional beta-Sn, diag(2,2,4),
         is only reachable this way.
     dedup_tol : grid points closer than this (A) are the same site.
-    include_adsorbates, max_host_distance : as in generate_h_interstitials.
-        With the defaults, doped's adsorbate finder is switched off and any
-        grid point further than max_host_distance from every host atom (the
-        Voronoi nodes in the middle of a slab's vacuum gap) is dropped.  Site
-        types that lose every point disappear from sc.info["h_site_types"];
-        the surviving types keep their original indices.
     """
     from ase.geometry import get_distances
-    sites = _interstitial_sites_frac(host, all_wyckoffs=all_wyckoffs,
-                                     include_adsorbates=include_adsorbates)
+    sites = _interstitial_sites_frac(host, all_wyckoffs=all_wyckoffs)
     if supercell_matrix is not None:
         P = np.asarray(supercell_matrix, dtype=int)
         if P.ndim == 1:
@@ -359,19 +351,11 @@ def h_site_grid(host: Atoms, target_size: int = 32, target_shape: str = "sc",
         if keep[i]:
             keep[i + 1:] &= D[i, i + 1:] > dedup_tol
     xyz, types = xyz[keep], types[keep]
-
-    # Same vacuum filter as generate_h_interstitials: drop sites in the vacuum gap.
-    _, dh = get_distances(xyz, sc.positions, cell=sc.cell, pbc=sc.pbc)
-    dh = dh.min(axis=1)
-    inside = dh <= max_host_distance
-    n_vacuum = int((~inside).sum())
-    xyz, types, dh = xyz[inside], types[inside], dh[inside]
-    if len(xyz) == 0:
-        raise RuntimeError(f"every candidate site is > {max_host_distance} A from the host")
     out = [(p, int(s)) for p, s in zip(xyz, types)]
 
+    _, dh = get_distances(xyz, sc.positions, cell=sc.cell, pbc=sc.pbc)
     sc.info.update(target_size=size_used, shape_deviation=dev,
-                   supercell_matrix=P.tolist(), n_vacuum_sites_removed=n_vacuum,
+                   supercell_matrix=P.tolist(),
                    h_site_types={int(s): {"count": int((types == s).sum()),
                                           "nearest_host": round(float(dh[types == s].min()), 3)}
                                  for s in np.unique(types)})
@@ -381,7 +365,6 @@ def h_site_grid(host: Atoms, target_size: int = 32, target_shape: str = "sc",
 def make_h_configuration(sc: Atoms, positions, n_h: int, *,
                          target_separation=None, min_separation: float = 1.6,
                          site_types=None, tol: float = 0.05,
-                         max_host_distance: float = 4.0,
                          rng=None, max_tries: int = 200):
     """Place `n_h` H atoms on the candidate grid from h_site_grid().
 
@@ -395,10 +378,6 @@ def make_h_configuration(sc: Atoms, positions, n_h: int, *,
     min_separation : no H-H pair closer than this.
     site_types : restrict to these site indices (see sc.info["h_site_types"]),
         e.g. [0] to use only the most open site.  None = all.
-    max_host_distance : as in generate_h_interstitials -- candidates further
-        than this from every host atom (vacuum-gap sites) are never used.
-        h_site_grid already applies it; repeating it here also covers
-        `positions` built some other way.
     rng : np.random.Generator or int seed, for reproducible configurations.
     """
     from ase.geometry import get_distances
@@ -408,21 +387,14 @@ def make_h_configuration(sc: Atoms, positions, n_h: int, *,
     if site_types is not None:
         keep = np.isin(types, list(site_types))
         xyz, types = xyz[keep], types[keep]
-    if len(xyz):
-        _, dh = get_distances(xyz, sc.positions, cell=sc.cell, pbc=sc.pbc)
-        dh = dh.min(axis=1)
-        inside = dh <= max_host_distance
-        xyz, types, dh = xyz[inside], types[inside], dh[inside]
     if len(xyz) < n_h:
-        raise ValueError(f"only {len(xyz)} candidate sites within {max_host_distance} A "
-                         f"of the host for n_h={n_h} (site_types={site_types})")
+        raise ValueError(f"only {len(xyz)} candidate sites for n_h={n_h}")
 
     def build(pick):
         atoms = sc.copy()
         atoms += Atoms("H" * len(pick), positions=xyz[pick])
         atoms.info.update(n_h=int(n_h), at_pct_H=100.0 * n_h / len(atoms),
-                          h_site_idx=[int(types[k]) for k in pick],
-                          nearest_host=[float(dh[k]) for k in pick])
+                          h_site_idx=[int(types[k]) for k in pick])
         return atoms
 
     if n_h == 2 and target_separation is not None:

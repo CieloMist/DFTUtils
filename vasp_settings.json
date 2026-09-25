@@ -12,7 +12,7 @@
 "lorbit": 11, 
 "ismear": 0, 
 "sigma": 0.02, 
-"lwav": true, 
+"lwave": true, 
 "lcharg": true, 
 "laechg": true,
 "prec": "Accurate", 
