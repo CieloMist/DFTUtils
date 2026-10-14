@@ -15,6 +15,7 @@
 "lwave": true, 
 "lcharg": true, 
 "laechg": true,
+"lasph": true,
 "prec": "Accurate", 
 "encut": 500, 
 "lreal": false, 

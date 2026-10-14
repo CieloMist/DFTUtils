@@ -985,6 +985,7 @@ def run_phonons(initial_struct, phonopy_settings, job_manager_settings, updated_
     # ----------------------------------------------- #
     # dry run for DFTJobManager
     dry_run = job_manager_settings.pop('dry_run', False)
+    directory_suffix = phonopy_settings.pop('directory_suffix', None)
 
     # ----------------------------------------------- #
     # Create phonons directory
@@ -997,7 +998,6 @@ def run_phonons(initial_struct, phonopy_settings, job_manager_settings, updated_
     atoms = interchange_atoms_ase_phonopy(initial_struct)
     phonons = Phonopy(atoms, **phonopy_settings)
 
-    directory_suffix = phonopy_settings.pop('directory_suffix', None)
     displacement_distance = phonopy_settings.pop('displacement_distance', 0.01)
 
     phonons.generate_displacements(distance = displacement_distance, is_plusminus = True) # can move is_plusminus into settings later
@@ -1283,3 +1283,63 @@ def process_cohp_from_lobsterpy_analysis(ana, site_bond, orbital_bond, energy_wi
         cohp_to_collapse = cohp_to_collapse[match]
 
     return cohp_to_collapse, energies
+
+
+def strain_cells(struct, strain = None, match_cell_to = None, inplace = False):
+    '''
+    Applies Cauchy strain to a structure or list of structures. Returns ASE atoms.
+    
+    args
+    --------
+    strain (np.array, list): strain to apply to a unit cell, 3x3 tensor
+    struct (ASE Atoms): structure or list of structures which to apply strain to
+    match_cell_to (ASE Atoms): pass another ASE atoms to set cells in [structs] to the cell of this Atoms. 
+    inplace (bool): whether to modify the ASE atoms directly or return a copy.
+    '''
+
+    # choose a mode
+    assert strain != match_cell_to, 'choose either strain or match_cell.'
+
+    # make sure the strain can be matrix multiplied
+    strain = np.array(strain)
+    if match_cell_to is not None:
+        match_cell = match_cell_to.cell[:]
+
+    # ---------------------------------------------------- #
+    # handle whether struct is a list or a single ASE Atoms
+    # List:
+    to_return = []
+    if isinstance(struct, list):
+        for image in struct:
+            copy = image.copy()
+            og_cell = image.cell[:]
+            
+            # match cell?
+            if match_cell_to is not None:
+                strain = np.linalg.inv(og_cell) @ match_cell
+
+            # return Atoms inplace?
+            if inplace:
+                image.set_cell(og_cell @ strain, scale_atoms=True)
+            else:
+                copy.set_cell(og_cell @ strain, scale_atoms=True)
+                to_return.append(copy)
+
+    # Single ASE Atoms:
+    else:
+        copy = struct.copy()
+        og_cell = struct.cell[:]
+
+        # match cell?
+        if match_cell_to is not None:
+            strain = np.linalg.inv(og_cell) @ match_cell
+        
+        # return Atoms inplace?
+        if inplace:
+            struct.set_cell(og_cell @ strain, scale_atoms=True)
+            to_return = struct            
+        else:
+            copy.set_cell(og_cell @ strain, scale_atoms=True)
+            to_return = copy
+
+    return to_return

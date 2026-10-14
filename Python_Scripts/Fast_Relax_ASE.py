@@ -20,7 +20,7 @@ from asekpd import safe_kgrid_from_cell_volume
 # Pymatgen Stuff
 from pymatgen.io.vasp import Kpoints
 # MACE
-from mace.calculators import mace_mp
+from mace.calculators import mace_mp, MACECalculator
 # META
 # from fairchem.core import pretrained_mlip, FAIRChemCalculator
 
@@ -49,12 +49,13 @@ with open('mace_settings.json') as json_file:
     mace_settings = json.load(json_file)
     json_file.close()
 
+model_path = mace_settings.pop('model_path', None)
 # ----------------------------------------------------------------------- #
 # Calculation Details
     # Set Initial Structure
 struct = read('Initial.traj', format = 'traj')
 
-if (restart == True) and (os.path.exists(os.getcwd + '/relax.traj')):
+if (restart == True) and (os.path.exists(os.getcwd() + '/relax.traj')):
     struct = read('relax.traj', format = 'traj')
 
 # ------------------------------------------------------------ #
@@ -87,7 +88,14 @@ else:
 # ------------------------------------------------------------- #
 # MACE PRE-RELAXATION
 # default to MACE
-calc = mace_mp(**mace_settings)
+if model_path is not None:
+    calc = MACECalculator(
+        model_paths=model_path, 
+        **mace_settings
+    )
+else:
+    calc = mace_mp(**mace_settings)
+
 struct.calc = calc
 
 relaxer.run(fmax = fmax)

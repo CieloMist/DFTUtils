@@ -20,8 +20,11 @@ from ase.mep.dyneb import DyNEB
     # File io
 from ase.io import read, write
 
+    # Mine
+from DFTUtils import make_directories_from_list
+
 #MACE
-from mace.calculators import mace_mp
+from mace.calculators import mace_mp, MACECalculator
 
 # ----------------------------------------------------------------------- #
 # Read in settings
@@ -31,34 +34,38 @@ with open('neb_settings.json') as json_file:
     json_file.close()
 restart = neb_settings.pop('restart')
 n_images = neb_settings.pop('n_images')
-# DyNEB has its OWN fmax parameter (default 0.05) that drives dynamic relaxation: images
-# below it get their forces zeroed in get_forces() and are refused position updates in
-# set_positions(). Popping it here without passing it on left DyNEB at 0.05 while the
-# optimizer chased mace_settings' fmax -- so the band froze solid the moment every image
-# dropped under 0.05 and could never converge to anything tighter. Must be passed through.
 fmax = neb_settings.pop('fmax', 0.05)
 optimizer = neb_settings.pop('optimizer')
 read_images = neb_settings.pop('read_images', False)
 
+directory_suffix = neb_settings.pop('directory_suffix')
+
+# ----------------------------------- #
+# Ready lobster calculation files
+dirlist = ['MACE_NEB' if directory_suffix == None else 'MACE_NEB_' + directory_suffix]
+make_directories_from_list(dirlist, delete = False)
+os.chdir(dirlist[0])
+
 # ---------------------- #
     # Read MACE Settings
-with open('mace_settings.json') as json_file:
+with open('../mace_settings.json') as json_file:
     mace_settings = json.load(json_file)
     json_file.close()
 
+model_path = mace_settings.pop('model_path', None)
 # ---------------------------------- #
 # Initialize Images and NEB
 if restart == True:
-    images = read(f'NEB.traj@-{n_images}:')
+    images = read(f'../NEB.traj@-{n_images}:')
     neb = DyNEB(images, fmax = fmax, **neb_settings)
 
 elif read_images == True:
-    images = read('images.traj@:')
+    images = read('../images.traj@:')
     neb = DyNEB(images, fmax = fmax, **neb_settings)
 
 else:
-    initial = read('Initial.traj', format = 'traj')
-    final = read('Final.traj', format = 'traj')
+    initial = read('../Initial.traj', format = 'traj')
+    final = read('../Final.traj', format = 'traj')
     
     images = [initial]
     images += [initial.copy() for i in range(n_images-2)]
@@ -71,7 +78,13 @@ else:
 # Set MACE Calculator
 for image in neb.images:
     # Set Calculator
-    calc = mace_mp(**mace_settings)
+    if model_path is not None:
+        calc = MACECalculator(
+            model_paths=model_path, 
+            **mace_settings
+        )
+    else:
+        calc = mace_mp(**mace_settings)
     image.calc = calc
 
     # image.get_potential_energy()
