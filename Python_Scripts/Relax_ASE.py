@@ -17,10 +17,11 @@ from ase.stressbox import stressbox
     # File io
 from ase.io import read, write
 from kgrid import safe_kgrid_from_cell_volume
+from DFTUtils import set_vasp_pp_path
 
 # ----------------------------------- #
 # Read in VASP settings
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
     # Read Input Settings - all INCAR and POTCAR settings specified here

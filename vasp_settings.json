@@ -22,6 +22,6 @@
 "isym": 2, 
 "ispin": 1, 
 "setups": "recommended",
-"xc": "pbesol",
+"xc": "pbe",
 "ncore": 8,
 "kpar": 4}

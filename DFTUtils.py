@@ -3,8 +3,53 @@ import numpy as np
 
 
 # ------------------------------------------------ #
+# HPC Detection
+# Each HPC is identified by a directory that exists only on that machine.
+# Names match dftjobs.py's CLUSTERS keys. To add a cluster, add an entry to
+# both dicts below.
+HPC_MARKERS = {
+    'quest':    '/projects/p32212',
+    'bridges2': '/ocean/projects/mat260005p',
+}
+
+# Directory ASE's Vasp calculator reads as VASP_PP_PATH (must contain potpaw_PBE/<setup>/POTCAR)
+VASP_PP_PATHS = {
+    'quest':    '/projects/b1027/Pseudopotentials.64',
+    'bridges2': '/ocean/projects/mat260005p/dsmithc/Software/VASP_Pseudos',
+}
+
+def detect_hpc():
+    """Return the name of the HPC this is running on ('quest' or 'bridges2').
+
+    Raises RuntimeError if no entry in HPC_MARKERS matches.
+    """
+    import os
+
+    for hpc, marker in HPC_MARKERS.items():
+        if os.path.isdir(marker):
+            return hpc
+    raise RuntimeError(f"Could not detect HPC: none of the HPC_MARKERS directories exist {HPC_MARKERS}")
+
+def set_vasp_pp_path(hpc = None):
+    """Set os.environ['VASP_PP_PATH'] to this HPC's pseudopotential directory.
+
+    Args:
+    hpc (str): HPC name from VASP_PP_PATHS. If None, detected with detect_hpc().
+
+    Returns:
+    hpc (str): the HPC used
+    """
+    import os
+
+    if hpc is None:
+        hpc = detect_hpc()
+    os.environ['VASP_PP_PATH'] = VASP_PP_PATHS[hpc]
+    return hpc
+
+
+# ------------------------------------------------ #
 # ASE Relaxation Functions
-def write_vasp_settings(updated_vasp_settings):
+def write_vasp_settings(updated_vasp_settings, hpc = 'quest'):
     """Pull default vasp settings from DFTUtils, then update them with updated_vasp_settings
 
     Args:
@@ -13,7 +58,15 @@ def write_vasp_settings(updated_vasp_settings):
     import json
 
     # Collect default vasp settings from DFTUtils json
-    with open('/projects/p32212/DefaultScripts/DFT_Utilities/vasp_settings.json') as json_file:
+    
+    if hpc=='quest':
+        default_settings_loc = '/projects/p32212/DefaultScripts/DFT_Utilities/vasp_settings.json' 
+    elif hpc=='bridges2':
+        default_settings_loc='/ocean/projects/mat260005p/dsmithc/DefaultScripts/DFTUtils/vasp_settings.json'
+    else:
+        default_settings_loc=None # guard against incorrect supercomputer setting for now
+
+    with open(default_settings_loc) as json_file:
         vasp_settings = json.load(json_file)
         json_file.close()
 

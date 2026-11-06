@@ -30,6 +30,7 @@ editable registries below:
     CLUSTERS            partitions, cores/node, purge + module init  [hpc]
     DEFAULT_MODULES     `module load` lines                       [hpc][code]
     ENV_SETUP           conda activation etc.                     [hpc]
+    CODE_ENV_SETUP      per-code replacement for ENV_SETUP        [hpc][code]
     DEFAULT_PYTHON      interpreter for the ASE/python script     [hpc]
     DEFAULT_SCRIPTS     folder holding your scripts               [hpc]
     DEFAULT_RUN_DIR     working dir jobs cd into ("."=submit dir) [hpc]
@@ -98,7 +99,7 @@ CLUSTERS: Dict[str, ClusterConfig] = {
     ),
     "bridges2": ClusterConfig(
         name="bridges2",
-        cores_per_node=128,
+        cores_per_node=64,
         partitions={
             "RM": 48.0, "RM-shared": 48.0, "RM-512": 48.0,
             "EM": 120.0, "GPU": 48.0, "GPU-shared": 48.0,
@@ -176,7 +177,12 @@ DEFAULT_MODULES: Dict[str, Dict[str, List[str]]] = {
     },
     "bridges2": {
         "qe":   _load("QuantumEspresso/7.5-intel"),
-        "vasp": _load("VASP/6.5.1-gcc+vtst"),
+        # VASP's module doesn't pull in its own runtime libs; load them first
+        # (OpenMPI build -> mpirun must be OpenMPI's, not Intel MPI's).
+        "vasp": _load("openmpi/5.0.3-gcc13.2.1",
+                      "intel-mkl/2023.2.0",
+                      "cuda/11.7.1",            # libcudart, per `module help VASP`
+                      "VASP/6.5.1-gcc+vtst"),
     },
 }
 
@@ -189,6 +195,16 @@ ENV_SETUP: Dict[str, List[str]] = {
     "bridges2": ["source ~/.bashrc",
                  "source activate atomistic",              # conda first...
                  "source /opt/intel/oneapi/setvars.sh"]    # ...MKL/oneAPI last so it wins at runtime
+}
+
+# Per-code REPLACEMENT for ENV_SETUP[hpc]. Precedence: env_setup= argument >
+# LOCAL_INSTALLS > CODE_ENV_SETUP > ENV_SETUP.
+# bridges2/vasp drops setvars.sh: it would put Intel MPI 2021.6's mpirun ahead
+# of the OpenMPI 5.0.3 that the VASP/6.5.1-gcc+vtst build is linked against.
+CODE_ENV_SETUP: Dict[str, Dict[str, List[str]]] = {
+    "bridges2": {
+        "vasp": ["source ~/.bashrc", "source activate atomistic"],
+    },
 }
 
 # Interpreter for the script. On Bridges-2 this is an ABSOLUTE conda path so it
@@ -396,6 +412,8 @@ class DFTJobManager:
             self._env_setup = list(env_setup)
         elif self._local is not None:
             self._env_setup = list(self._local["env_setup"])
+        elif code_key in CODE_ENV_SETUP.get(hpc_key, {}):
+            self._env_setup = list(CODE_ENV_SETUP[hpc_key][code_key])
         else:
             self._env_setup = list(ENV_SETUP.get(hpc_key, []))
         self._default_directives = dict(default_directives) if default_directives is not None else dict(DEFAULT_DIRECTIVES.get(hpc_key, {}))

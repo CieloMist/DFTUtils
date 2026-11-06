@@ -10,7 +10,7 @@ from mace.calculators import mace_mp
 
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
+from kgrid import safe_kgrid_from_cell_volume
 
 # mine
 from select_diverse_frames import mace_descriptors, save_descriptors, load_descriptors, fps_frames, distance_to_reference, strip_calc

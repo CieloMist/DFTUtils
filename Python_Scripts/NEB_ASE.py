@@ -17,13 +17,14 @@ from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
+from kgrid import safe_kgrid_from_cell_volume
+from DFTUtils import set_vasp_pp_path
 # Pymatgen Stuff
 from pymatgen.io.vasp import Kpoints
 
 # ----------------------------------- #
 # VASP Path Definitions
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
 # ----------------------------------------------------------------------- #

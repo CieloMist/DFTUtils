@@ -10,16 +10,16 @@ from ase.io import read, write
 
 # ASE
 from ase.calculators.vasp import Vasp
-from asekpd import safe_kgrid_from_cell_volume
+from kgrid import safe_kgrid_from_cell_volume
 from mace.calculators import mace_mp
 
 # Mine
-from DFTUtils import write_vasp_settings, write_settings_json, get_strain, render_chg_slice
+from DFTUtils import write_vasp_settings, write_settings_json, get_strain, render_chg_slice, set_vasp_pp_path
 from DFTUtils import copy_files_from_DFTUtilities, remove_files, make_directories_from_list
 
 # ----------------------------------- #
 # Read in VASP settings
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
 # Read AIMD Settings:

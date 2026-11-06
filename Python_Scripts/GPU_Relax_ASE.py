@@ -16,11 +16,12 @@ from ase.filters import StrainFilter
 from ase.stressbox import stressbox
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
+from kgrid import safe_kgrid_from_cell_volume
+from DFTUtils import set_vasp_pp_path
 
 # ----------------------------------- #
 # Read in VASP settings
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n 1 vasp_std"
 os.environ["OMP_NUM_THREADS"] = 1
 

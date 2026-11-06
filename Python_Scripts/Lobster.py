@@ -22,11 +22,11 @@ from kgrid import safe_kgrid_from_cell_volume
 from pymatgen.io.lobster.inputs import Lobsterin
 from pymatgen.core import Structure
 # Mine
-from DFTUtils import make_directories_from_list
+from DFTUtils import make_directories_from_list, set_vasp_pp_path
 
 # ----------------------------------- #
 # VASP Path Definitions
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
 # ----------------------------------------------------------------------- #

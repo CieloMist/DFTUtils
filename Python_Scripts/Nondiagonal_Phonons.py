@@ -28,7 +28,7 @@ import numpy as np
 from ase.calculators.vasp import Vasp
     # File io
 from ase.io import read, write
-from asekpd import safe_kgrid_from_cell_volume
+from kgrid import safe_kgrid_from_cell_volume
 # Phonopy stuff
 from phonopy import Phonopy
 # Quesadilla stuff
@@ -36,11 +36,11 @@ from quesadilla.cli import get_phonopy_prim
 from quesadilla.supercells import SupercellGenerator
 from quesadilla.dynmat import NondiagonalPhononCalculator
 # Mine
-from DFTUtils import make_directories_from_list, interchange_atoms_ase_phonopy
+from DFTUtils import make_directories_from_list, interchange_atoms_ase_phonopy, set_vasp_pp_path
 
 # ----------------------------------- #
 # VASP Path Definitions
-os.environ["VASP_PP_PATH"] = "/projects/b1027/Pseudopotentials.64"
+set_vasp_pp_path()  # Quest or Bridges-2 POTCARs, auto-detected (see DFTUtils.VASP_PP_PATHS)
 os.environ["VASP_COMMAND"] = "mpirun -n $SLURM_NTASKS vasp_std"
 
 # ----------------------------------------------------------------------- #
