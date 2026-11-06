@@ -13,7 +13,7 @@ from ase.optimize import BFGS, BFGSLineSearch, GPMin, MDMin
     # Filters/Masks
 from ase.filters import FrechetCellFilter
 from ase.filters import StrainFilter
-from ase.stressbox import stressbox
+
     # File io
 from ase.io import read, write
 from kgrid import safe_kgrid_from_cell_volume

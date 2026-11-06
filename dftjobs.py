@@ -527,7 +527,7 @@ class DFTJobManager:
 
         script : str
             Script filename, resolved against default_scripts_dir (an absolute
-            path is used unchanged). Executed as `<python> <script> [args]`.
+            path is used unchanged). Executed as `<python> -u <script> [args]`.
         directory : str, optional
             Working/calculation directory the job `cd`s into before running.
             Defaults to the per-HPC run directory (DEFAULT_RUN_DIR[hpc], "." = submission dir).
@@ -645,7 +645,7 @@ class DFTJobManager:
             spaces). E.g. "--config config.yaml" or ["--encut", "520"].
         command : str, optional
             Raw shell command to use as the run line instead of building
-            `<python> <script>`. Highest precedence; skips script resolution.
+            `<python> -u <script>`. Highest precedence; skips script resolution.
         mpi : bool
             If True, prepend the cluster launcher (e.g. `srun`) to the run line.
             Leave False for ASE/driver scripts that spawn mpirun internally.
@@ -717,6 +717,7 @@ class DFTJobManager:
                     if "{ntasks}" in cfg.launcher else cfg.launcher
                 )
             pieces.append(python or self._python)
+            pieces.append("-u")  # unbuffered stdout/stderr: slurm logs update live, not only at exit
             pieces.append(self.script_path(script))
             args = _fmt_args(script_args)
             if args:
